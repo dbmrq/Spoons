@@ -137,5 +137,16 @@ function obj:stop()
     return self
 end
 
+--- Readline:loadTest()
+--- Method
+--- Loads the test module. Run tests with spoon.Readline:loadTest().runE2E()
+---
+--- Returns:
+---  * The test module
+function obj:loadTest()
+    local spoonPath = hs.spoons.scriptPath()
+    return dofile(spoonPath .. "/test.lua")
+end
+
 return obj
 
