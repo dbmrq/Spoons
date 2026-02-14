@@ -8,3 +8,8 @@ read_globals = {
     "spoon",
 }
 max_line_length = 200
+
+-- Allow test files to modify hs for mocking
+files["**/test.lua"] = {
+    globals = { "hs" },
+}
