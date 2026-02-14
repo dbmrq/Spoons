@@ -5,4 +5,11 @@
     "desc": "Emacs/readline-style keybindings for text editing across macOS apps.",
     "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/Readline.spoon.zip"
   }
+,
+  {
+    "name": "SlowQ",
+    "version": "1.0",
+    "desc": "Require holding Command+Q for a delay before quitting apps, preventing accidental closes.",
+    "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/SlowQ.spoon.zip"
+  }
 ]
