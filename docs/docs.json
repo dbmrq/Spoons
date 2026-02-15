@@ -1,5 +1,12 @@
 [
   {
+    "name": "CheatSheet",
+    "version": "1.0",
+    "desc": "Display a cheat sheet of keyboard shortcuts when modifier keys are held.",
+    "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/CheatSheet.spoon.zip"
+  }
+,
+  {
     "name": "Collage",
     "version": "1.0",
     "desc": "Clipboard manager with customizable menu for utilities.",
@@ -18,5 +25,12 @@
     "version": "1.0",
     "desc": "Require holding Command+Q for a delay before quitting apps, preventing accidental closes.",
     "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/SlowQ.spoon.zip"
+  }
+,
+  {
+    "name": "WinMan",
+    "version": "1.0",
+    "desc": "Grid-based window management with automatic cascading for overlapping windows.",
+    "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/WinMan.spoon.zip"
   }
 ]
