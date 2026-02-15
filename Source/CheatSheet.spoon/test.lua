@@ -25,6 +25,8 @@ function M.runUnit()
         {name = "fontSize", expected = 14},
         {name = "position", expected = "bottomLeft"},
         {name = "keyOrder", expectedType = "table"},
+        {name = "enableReadlineSheet", expected = true},
+        {name = "readlineBindings", expectedType = "table"},
     }
 
     for _, test in ipairs(configTests) do
@@ -91,13 +93,41 @@ function M.runUnit()
     end
 
     -- Test 5: Verify internal state variables exist
-    local internalVars = {"_canvas", "_eventtap", "_timer", "_visible", "_modFlags"}
+    local internalVars = {"_canvas", "_eventtap", "_timer", "_visible", "_modFlags", "_currentSheet"}
     for _, varName in ipairs(internalVars) do
         if obj[varName] ~= nil or obj[varName] == nil then  -- Just check it's defined
             print("✓ obj." .. varName .. " defined: PASS")
             passed = passed + 1
         else
             print("✗ obj." .. varName .. " not defined: FAIL")
+            failed = failed + 1
+        end
+    end
+
+    -- Test 6: Verify readlineBindings has expected structure
+    local bindings = obj.readlineBindings or {}
+    if #bindings > 0 then
+        local first = bindings[1]
+        if first.mods and first.key and first.desc then
+            print("✓ readlineBindings has correct structure: PASS")
+            passed = passed + 1
+        else
+            print("✗ readlineBindings missing mods/key/desc: FAIL")
+            failed = failed + 1
+        end
+    else
+        print("✗ readlineBindings is empty: FAIL")
+        failed = failed + 1
+    end
+
+    -- Test 7: Verify internal methods exist
+    local internalMethods = {"_createMainCanvas", "_createReadlineCanvas", "_show", "_hide", "_handleFlags"}
+    for _, methodName in ipairs(internalMethods) do
+        if type(obj[methodName]) == "function" then
+            print("✓ obj:" .. methodName .. "() exists: PASS")
+            passed = passed + 1
+        else
+            print("✗ obj:" .. methodName .. "() exists: FAIL")
             failed = failed + 1
         end
     end

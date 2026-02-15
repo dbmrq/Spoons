@@ -1,8 +1,8 @@
 --- === CheatSheet ===
 ---
 --- Display a cheat sheet of keyboard shortcuts when modifier keys are held.
---- Automatically discovers hotkeys registered with Hammerspoon and displays
---- only those matching the configured modifiers.
+--- Supports multiple sheets: auto-discovered hotkeys for custom modifier combos,
+--- and a readline/text-editing sheet when ctrl/alt is held in a text field.
 ---
 --- Download: [https://github.com/dbmrq/Spoons/raw/master/Spoons/CheatSheet.spoon.zip](https://github.com/dbmrq/Spoons/raw/master/Spoons/CheatSheet.spoon.zip)
 
@@ -11,7 +11,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "CheatSheet"
-obj.version = "1.0"
+obj.version = "2.0"
 obj.author = "Daniel Marques <danielbmarques@gmail.com>"
 obj.license = "MIT"
 obj.homepage = "https://github.com/dbmrq/Spoons"
@@ -25,6 +25,12 @@ obj.homepage = "https://github.com/dbmrq/Spoons"
 --- Table of modifier keys to watch. When all these modifiers (and only these)
 --- are held, the cheat sheet appears. Default: {"ctrl", "alt", "cmd"}
 obj.modifiers = {"ctrl", "alt", "cmd"}
+
+--- CheatSheet.enableReadlineSheet
+--- Variable
+--- Enable the readline/text-editing cheat sheet when ctrl, alt, or alt+shift
+--- is held while editing text. Default: true
+obj.enableReadlineSheet = true
 
 --- CheatSheet.delay
 --- Variable
@@ -78,6 +84,42 @@ obj.keyOrder = {
     -- Letters (alphabetically for the rest)
 }
 
+--- CheatSheet.readlineBindings
+--- Variable
+--- Predefined readline/text-editing bindings (macOS defaults + Readline spoon).
+--- Format: {mods = "⌃" or "⌥" or "⌥⇧", key = "X", desc = "Description"}
+obj.readlineBindings = {
+    -- Control key bindings (macOS defaults)
+    {mods = "⌃", key = "A", desc = "Start of line"},
+    {mods = "⌃", key = "E", desc = "End of line"},
+    {mods = "⌃", key = "F", desc = "Forward char"},
+    {mods = "⌃", key = "B", desc = "Backward char"},
+    {mods = "⌃", key = "N", desc = "Next line"},
+    {mods = "⌃", key = "P", desc = "Previous line"},
+    {mods = "⌃", key = "D", desc = "Delete forward"},
+    {mods = "⌃", key = "H", desc = "Delete backward"},
+    {mods = "⌃", key = "K", desc = "Kill to end"},
+    {mods = "⌃", key = "Y", desc = "Yank (paste kill)"},
+    {mods = "⌃", key = "T", desc = "Transpose chars"},
+    {mods = "⌃", key = "O", desc = "Insert newline after"},
+    {mods = "⌃", key = "U", desc = "Kill to start"},
+    {mods = "⌃", key = "W", desc = "Delete word back"},
+    -- Alt key bindings (Readline spoon + macOS)
+    {mods = "⌥", key = "F", desc = "Word forward"},
+    {mods = "⌥", key = "B", desc = "Word backward"},
+    {mods = "⌥", key = "D", desc = "Delete word forward"},
+    {mods = "⌥", key = ",", desc = "Start of document"},
+    {mods = "⌥", key = ".", desc = "End of document"},
+    {mods = "⌥", key = "←", desc = "Word backward"},
+    {mods = "⌥", key = "→", desc = "Word forward"},
+    {mods = "⌥", key = "⌫", desc = "Delete word back"},
+    -- Alt+Shift bindings (selection)
+    {mods = "⌥⇧", key = "F", desc = "Select word forward"},
+    {mods = "⌥⇧", key = "B", desc = "Select word backward"},
+    {mods = "⌥⇧", key = "←", desc = "Select word backward"},
+    {mods = "⌥⇧", key = "→", desc = "Select word forward"},
+}
+
 ---------------------------------------------------------------------------
 -- Internal State
 ---------------------------------------------------------------------------
@@ -87,6 +129,7 @@ obj._eventtap = nil
 obj._timer = nil
 obj._visible = false
 obj._modFlags = {}
+obj._currentSheet = nil  -- "main" or "readline"
 
 ---------------------------------------------------------------------------
 -- Modifier Utilities
@@ -161,6 +204,51 @@ local function formatModifiers(mods)
     return result
 end
 
+-- Check if current flags match readline sheet triggers (ctrl, alt, or alt+shift)
+local function isReadlineModifiers(flags)
+    local ctrl = flags.ctrl or false
+    local alt = flags.alt or false
+    local shift = flags.shift or false
+    local cmd = flags.cmd or false
+
+    if cmd then return false end  -- cmd+anything is not readline
+    if ctrl and not alt and not shift then return true end  -- ctrl only
+    if alt and not ctrl and not shift then return true end  -- alt only
+    if alt and shift and not ctrl then return true end  -- alt+shift
+    return false
+end
+
+---------------------------------------------------------------------------
+-- Text Field Detection
+---------------------------------------------------------------------------
+
+-- Text input roles that indicate an editable text field
+local textInputRoles = {
+    AXTextField = true,
+    AXTextArea = true,
+    AXComboBox = true,
+    AXSearchField = true,
+}
+
+-- Check if the currently focused element is a text field
+local function isTextFieldFocused()
+    local axSys = hs.axuielement.systemWideElement()
+    if not axSys then return false end
+
+    local focused = axSys:attributeValue("AXFocusedUIElement")
+    if not focused then return false end
+
+    local role = focused:attributeValue("AXRole")
+    if textInputRoles[role] then return true end
+
+    -- Also check if element is editable (for custom views)
+    local editable = focused:attributeValue("AXEditable") or
+                     focused:attributeValue("AXEnabled")
+    if role == "AXWebArea" then return true end  -- Web text inputs
+
+    return false
+end
+
 ---------------------------------------------------------------------------
 -- Hotkey Discovery
 ---------------------------------------------------------------------------
@@ -206,34 +294,12 @@ end
 -- Canvas Drawing
 ---------------------------------------------------------------------------
 
--- Create or update the canvas with current hotkeys
-function obj:_createCanvas()
-    local screen = hs.screen.mainScreen()
-    local frame = screen:frame()
-    local hotkeys = getMatchingHotkeys(self._modFlags, self.keyOrder)
-
-    if #hotkeys == 0 then return nil end
-
-    -- Calculate layout
-    local padding = 30
-    local margin = 20  -- Distance from screen edge
-    local lineHeight = self.fontSize + 10
-    local keyWidth = 60
-    local descWidth = 200
-    local colWidth = keyWidth + descWidth + 20
-
-    -- Determine columns and rows
-    local maxRowsPerCol = math.floor((frame.h - padding * 2) / lineHeight) - 1
-    local numCols = math.ceil(#hotkeys / maxRowsPerCol)
-    numCols = math.min(numCols, 4)  -- Max 4 columns
-    local rowsPerCol = math.ceil(#hotkeys / numCols)
-
-    local canvasWidth = numCols * colWidth + padding * 2
-    local canvasHeight = (rowsPerCol + 1) * lineHeight + padding * 2
-
-    -- Position based on self.position setting
+-- Calculate canvas position based on settings
+local function calculatePosition(frame, canvasWidth, canvasHeight, position)
+    local margin = 20
+    local pos = position or "center"
     local x, y
-    local pos = self.position or "center"
+
     if pos == "bottomLeft" then
         x = frame.x + margin
         y = frame.y + frame.h - canvasHeight - margin
@@ -250,52 +316,62 @@ function obj:_createCanvas()
         x = frame.x + (frame.w - canvasWidth) / 2
         y = frame.y + (frame.h - canvasHeight) / 2
     end
+    return x, y
+end
 
+-- Create canvas for main sheet (discovered hotkeys)
+function obj:_createMainCanvas()
+    local screen = hs.screen.mainScreen()
+    local frame = screen:frame()
+    local hotkeys = getMatchingHotkeys(self._modFlags, self.keyOrder)
+
+    if #hotkeys == 0 then return nil end
+
+    local padding = 30
+    local lineHeight = self.fontSize + 10
+    local keyWidth = 60
+    local descWidth = 200
+    local colWidth = keyWidth + descWidth + 20
+
+    local maxRowsPerCol = math.floor((frame.h - padding * 2) / lineHeight) - 1
+    local numCols = math.ceil(#hotkeys / maxRowsPerCol)
+    numCols = math.min(numCols, 4)
+    local rowsPerCol = math.ceil(#hotkeys / numCols)
+
+    local canvasWidth = numCols * colWidth + padding * 2
+    local canvasHeight = (rowsPerCol + 1) * lineHeight + padding * 2
+
+    local x, y = calculatePosition(frame, canvasWidth, canvasHeight, self.position)
     local canvas = hs.canvas.new({x = x, y = y, w = canvasWidth, h = canvasHeight})
 
-    -- Background with rounded corners
     canvas:appendElements({
-        type = "rectangle",
-        action = "fill",
-        fillColor = self.bgColor,
+        type = "rectangle", action = "fill", fillColor = self.bgColor,
         roundedRectRadii = {xRadius = 12, yRadius = 12},
     })
 
-    -- Title
     local modString = formatModifiers(self._modFlags)
     canvas:appendElements({
-        type = "text",
-        text = modString .. " Shortcuts",
-        textColor = self.highlightColor,
-        textFont = self.font,
+        type = "text", text = modString .. " Shortcuts",
+        textColor = self.highlightColor, textFont = self.font,
         textSize = self.fontSize + 4,
         frame = {x = padding, y = padding, w = canvasWidth - padding * 2, h = lineHeight},
     })
 
-    -- Hotkeys
     for i, hk in ipairs(hotkeys) do
         local col = math.floor((i - 1) / rowsPerCol)
         local row = (i - 1) % rowsPerCol
         local xPos = padding + col * colWidth
         local yPos = padding + (row + 1) * lineHeight + 10
 
-        -- Key
         canvas:appendElements({
-            type = "text",
-            text = hk.key,
-            textColor = self.highlightColor,
-            textFont = self.font,
-            textSize = self.fontSize,
-            textAlignment = "right",
+            type = "text", text = hk.key,
+            textColor = self.highlightColor, textFont = self.font,
+            textSize = self.fontSize, textAlignment = "right",
             frame = {x = xPos, y = yPos, w = keyWidth, h = lineHeight},
         })
-
-        -- Description
         canvas:appendElements({
-            type = "text",
-            text = hk.desc,
-            textColor = self.textColor,
-            textFont = self.font,
+            type = "text", text = hk.desc,
+            textColor = self.textColor, textFont = self.font,
             textSize = self.fontSize,
             frame = {x = xPos + keyWidth + 10, y = yPos, w = descWidth, h = lineHeight},
         })
@@ -304,12 +380,89 @@ function obj:_createCanvas()
     return canvas
 end
 
-function obj:_show()
+-- Create canvas for readline sheet (predefined bindings)
+function obj:_createReadlineCanvas()
+    local screen = hs.screen.mainScreen()
+    local frame = screen:frame()
+    local bindings = self.readlineBindings
+
+    if #bindings == 0 then return nil end
+
+    local padding = 30
+    local lineHeight = self.fontSize + 10
+    local modWidth = 30
+    local keyWidth = 30
+    local descWidth = 160
+    local colWidth = modWidth + keyWidth + descWidth + 20
+
+    local maxRowsPerCol = math.floor((frame.h - padding * 2) / lineHeight) - 1
+    local numCols = math.ceil(#bindings / maxRowsPerCol)
+    numCols = math.min(numCols, 4)
+    local rowsPerCol = math.ceil(#bindings / numCols)
+
+    local canvasWidth = numCols * colWidth + padding * 2
+    local canvasHeight = (rowsPerCol + 1) * lineHeight + padding * 2
+
+    local x, y = calculatePosition(frame, canvasWidth, canvasHeight, self.position)
+    local canvas = hs.canvas.new({x = x, y = y, w = canvasWidth, h = canvasHeight})
+
+    canvas:appendElements({
+        type = "rectangle", action = "fill", fillColor = self.bgColor,
+        roundedRectRadii = {xRadius = 12, yRadius = 12},
+    })
+
+    canvas:appendElements({
+        type = "text", text = "Text Editing",
+        textColor = self.highlightColor, textFont = self.font,
+        textSize = self.fontSize + 4,
+        frame = {x = padding, y = padding, w = canvasWidth - padding * 2, h = lineHeight},
+    })
+
+    for i, binding in ipairs(bindings) do
+        local col = math.floor((i - 1) / rowsPerCol)
+        local row = (i - 1) % rowsPerCol
+        local xPos = padding + col * colWidth
+        local yPos = padding + (row + 1) * lineHeight + 10
+
+        -- Modifier symbol
+        canvas:appendElements({
+            type = "text", text = binding.mods,
+            textColor = self.textColor, textFont = self.font,
+            textSize = self.fontSize, textAlignment = "right",
+            frame = {x = xPos, y = yPos, w = modWidth, h = lineHeight},
+        })
+        -- Key
+        canvas:appendElements({
+            type = "text", text = binding.key,
+            textColor = self.highlightColor, textFont = self.font,
+            textSize = self.fontSize, textAlignment = "left",
+            frame = {x = xPos + modWidth + 5, y = yPos, w = keyWidth, h = lineHeight},
+        })
+        -- Description
+        canvas:appendElements({
+            type = "text", text = binding.desc,
+            textColor = self.textColor, textFont = self.font,
+            textSize = self.fontSize,
+            frame = {x = xPos + modWidth + keyWidth + 15, y = yPos, w = descWidth, h = lineHeight},
+        })
+    end
+
+    return canvas
+end
+
+function obj:_show(sheetType)
     if self._visible then return end
-    self._canvas = self:_createCanvas()
+
+    if sheetType == "readline" then
+        self._canvas = self:_createReadlineCanvas()
+    else
+        self._canvas = self:_createMainCanvas()
+    end
+
     if self._canvas then
         self._canvas:show()
         self._visible = true
+        self._currentSheet = sheetType
     end
 end
 
@@ -320,6 +473,7 @@ function obj:_hide()
         self._canvas = nil
     end
     self._visible = false
+    self._currentSheet = nil
 end
 
 ---------------------------------------------------------------------------
@@ -329,22 +483,36 @@ end
 function obj:_handleFlags(event)
     local flags = event:getFlags()
 
+    -- Check for main sheet (all configured modifiers)
     if flagsMatchModifiers(flags, self._modFlags) then
-        -- Modifiers match - start timer to show
         if not self._timer then
             self._timer = hs.timer.doAfter(self.delay, function()
-                self:_show()
+                self:_show("main")
                 self._timer = nil
             end)
         end
-    else
-        -- Modifiers don't match - hide and cancel timer
-        if self._timer then
-            self._timer:stop()
-            self._timer = nil
-        end
-        self:_hide()
+        return false
     end
+
+    -- Check for readline sheet (ctrl, alt, or alt+shift while editing text)
+    if self.enableReadlineSheet and isReadlineModifiers(flags) then
+        if not self._timer then
+            self._timer = hs.timer.doAfter(self.delay, function()
+                if isTextFieldFocused() then
+                    self:_show("readline")
+                end
+                self._timer = nil
+            end)
+        end
+        return false
+    end
+
+    -- No match - hide and cancel timer
+    if self._timer then
+        self._timer:stop()
+        self._timer = nil
+    end
+    self:_hide()
 
     return false  -- Don't consume the event
 end

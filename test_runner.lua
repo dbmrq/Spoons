@@ -98,6 +98,13 @@ hs = {
         end,
         allScreens = function() return {} end,
     },
+    axuielement = {
+        systemWideElement = function()
+            return {
+                attributeValue = function() return nil end,
+            }
+        end,
+    },
 }
 
 -- Set up package.preload so require("hs.module") returns the mock
@@ -105,7 +112,7 @@ local hsModules = {
     "hs.pasteboard", "hs.settings", "hs.timer", "hs.eventtap",
     "hs.application", "hs.spoons", "hs.menubar", "hs.hotkey",
     "hs.grid", "hs.geometry", "hs.window", "hs.screen",
-    "hs.canvas", "hs.fnutils",
+    "hs.canvas", "hs.fnutils", "hs.axuielement",
 }
 for _, modName in ipairs(hsModules) do
     local submodule = modName:match("^hs%.(.+)$")
