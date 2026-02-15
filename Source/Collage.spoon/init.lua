@@ -165,8 +165,8 @@ function obj:_buildMenu()
         })
     end
 
-    -- "More..." submenu if there are additional items
-    if #history > self.recentItemCount then
+    -- "More..." submenu (always shown when there's history, contains Clear All)
+    if #history > 0 then
         local moreItems = {}
         for i = self.recentItemCount + 1, #history do
             local item = history[i]
@@ -175,18 +175,14 @@ function obj:_buildMenu()
                 fn = function() hs.eventtap.keyStrokes(item) end
             })
         end
-        table.insert(moreItems, { title = "-" })
+        if #moreItems > 0 then
+            table.insert(moreItems, { title = "-" })
+        end
         table.insert(moreItems, {
             title = "Clear All",
             fn = function() self:clearHistory() end
         })
         table.insert(menuData, { title = "More...", menu = moreItems })
-    elseif #history > 0 then
-        table.insert(menuData, { title = "-" })
-        table.insert(menuData, {
-            title = "Clear All",
-            fn = function() self:clearHistory() end
-        })
     end
 
     -- Divider before custom items
