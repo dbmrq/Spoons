@@ -6,23 +6,33 @@
 -- Create mock hs namespace
 hs = {
     eventtap = {
-        keyStroke = function(mods, key)
-            -- Will be mocked by tests
-        end,
+        keyStroke = function(mods, key) end,
         keyStrokes = function(text) end,
+        new = function(types, callback)
+            return {
+                start = function() end,
+                stop = function() end,
+            }
+        end,
+        event = {
+            types = {
+                flagsChanged = 12,
+            },
+        },
     },
     pasteboard = {
         setContents = function(text) end,
         getContents = function() return "" end,
     },
     timer = {
-        doAfter = function(delay, fn) fn() end,
+        doAfter = function(delay, fn) return { stop = function() end } end,
     },
     application = {
         launchOrFocus = function(name) end,
     },
     spoons = {
         scriptPath = function() return "." end,
+        bindHotkeysToSpec = function() end,
     },
     menubar = {
         new = function()
@@ -43,6 +53,19 @@ hs = {
                 disable = function() end,
             }
         end,
+        getHotkeys = function() return {} end,
+    },
+    canvas = {
+        new = function(rect)
+            return {
+                appendElements = function() end,
+                show = function() end,
+                delete = function() end,
+            }
+        end,
+    },
+    fnutils = {
+        partial = function(fn, ...) return fn end,
     },
     settings = {
         get = function() return nil end,
@@ -82,6 +105,7 @@ local hsModules = {
     "hs.pasteboard", "hs.settings", "hs.timer", "hs.eventtap",
     "hs.application", "hs.spoons", "hs.menubar", "hs.hotkey",
     "hs.grid", "hs.geometry", "hs.window", "hs.screen",
+    "hs.canvas", "hs.fnutils",
 }
 for _, modName in ipairs(hsModules) do
     local submodule = modName:match("^hs%.(.+)$")
