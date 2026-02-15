@@ -1039,7 +1039,8 @@ function obj:bindHotkeys(mapping)
     -- Create hotkeys
     for action, key in pairs(bindings) do
         if key and self.actions[action] then
-            local hk = hotkey.new(self.modifiers, key, self.actions[action])
+            -- Include action name as message for cheat sheet discovery
+            local hk = hotkey.new(self.modifiers, key, action, self.actions[action])
             table.insert(self._hotkeys, hk)
         end
     end
