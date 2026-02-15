@@ -24,7 +24,71 @@ hs = {
     spoons = {
         scriptPath = function() return "." end,
     },
+    menubar = {
+        new = function()
+            return {
+                setTitle = function() end,
+                setTooltip = function() end,
+                setMenu = function() end,
+                returnToMenuBar = function() end,
+                delete = function() end,
+            }
+        end,
+    },
+    hotkey = {
+        bind = function()
+            return {
+                delete = function() end,
+                enable = function() end,
+                disable = function() end,
+            }
+        end,
+    },
+    settings = {
+        get = function() return nil end,
+        set = function() end,
+    },
+    grid = {
+        setGrid = function() end,
+        setMargins = function() end,
+        getGrid = function() return { w = 6, h = 6 } end,
+        get = function() return { x = 0, y = 0, w = 1, h = 1 } end,
+        set = function() end,
+        show = function() end,
+    },
+    geometry = {
+        rect = function(x, y, w, h) return { x = x, y = y, w = w, h = h } end,
+        point = function(x, y) return { x = x, y = y } end,
+        size = function(w, h) return { w = w, h = h } end,
+    },
+    window = {
+        focusedWindow = function() return nil end,
+        filter = {
+            new = function() return { getWindows = function() return {} end } end,
+        },
+    },
+    screen = {
+        mainScreen = function()
+            return {
+                frame = function() return { x = 0, y = 0, w = 1920, h = 1080 } end,
+            }
+        end,
+        allScreens = function() return {} end,
+    },
 }
+
+-- Set up package.preload so require("hs.module") returns the mock
+local hsModules = {
+    "hs.pasteboard", "hs.settings", "hs.timer", "hs.eventtap",
+    "hs.application", "hs.spoons", "hs.menubar", "hs.hotkey",
+    "hs.grid", "hs.geometry", "hs.window", "hs.screen",
+}
+for _, modName in ipairs(hsModules) do
+    local submodule = modName:match("^hs%.(.+)$")
+    if submodule and hs[submodule] then
+        package.preload[modName] = function() return hs[submodule] end
+    end
+end
 
 -- Mock spoon namespace
 spoon = {

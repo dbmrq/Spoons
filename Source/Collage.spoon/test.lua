@@ -115,7 +115,7 @@ function M.runUnit()
         local withNewline = obj:_truncate("line1\nline2")
 
         return short == "short text"
-            and #long == 41  -- 40 chars + ellipsis
+            and #long == 43  -- 40 chars + ellipsis (3 bytes for "…" in UTF-8)
             and withNewline == "line1 line2"
     end
 
@@ -147,6 +147,25 @@ function M.runUnit()
     else
         print("✗ addItem: FAIL")
         failed = failed + 1
+    end
+
+    -- Test 5: addSubmenu adds custom submenus
+    local function test_addSubmenu()
+        local obj = createMockObj()
+        obj.addSubmenu = collage and collage.addSubmenu or function(self, title, items)
+            table.insert(self._customSubmenus, { title = title, items = items })
+            self:_refreshMenu()
+            return self
+        end
+
+        obj:addSubmenu("Test Submenu", {
+            { title = "Item 1", fn = function() end },
+            { title = "Item 2", fn = function() end }
+        })
+
+        return #obj._customSubmenus == 1
+            and obj._customSubmenus[1].title == "Test Submenu"
+            and #obj._customSubmenus[1].items == 2
     end
 
     if test_addSubmenu() then
