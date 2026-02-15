@@ -1,5 +1,12 @@
 [
   {
+    "name": "Collage",
+    "version": "1.0",
+    "desc": "Clipboard manager with customizable menu for utilities.",
+    "download_url": "https://github.com/dbmrq/Spoons/raw/master/Spoons/Collage.spoon.zip"
+  }
+,
+  {
     "name": "Readline",
     "version": "1.0",
     "desc": "Emacs/readline-style keybindings for text editing across macOS apps.",
