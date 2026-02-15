@@ -86,16 +86,16 @@ obj.screenConfigs = {}
 --- Set a binding to `false` to disable it.
 obj.defaultBindings = {
     -- Resize (anchor to edge, toggle grow/shrink)
-    resizeUp = "Up",
-    resizeDown = "Down",
-    resizeLeft = "Left",
-    resizeRight = "Right",
+    resizeUp = "K",
+    resizeDown = "J",
+    resizeLeft = "H",
+    resizeRight = "L",
 
     -- Move (push window in direction)
-    moveUp = false,
-    moveDown = false,
-    moveLeft = false,
-    moveRight = false,
+    moveUp = "Up",
+    moveDown = "Down",
+    moveLeft = "Left",
+    moveRight = "Right",
 
     -- Layout actions
     maximize = ";",
@@ -125,6 +125,43 @@ obj.defaultBindings = {
     swapWindows = false,
     toggleStageManager = false,
     focusMode = false,
+}
+
+--- WinMan.actionDescriptions
+--- Variable
+--- Human-readable descriptions for actions (used by CheatSheet)
+obj.actionDescriptions = {
+    resizeUp = "Resize ↑",
+    resizeDown = "Resize ↓",
+    resizeLeft = "Resize ←",
+    resizeRight = "Resize →",
+    moveUp = "Move ↑",
+    moveDown = "Move ↓",
+    moveLeft = "Move ←",
+    moveRight = "Move →",
+    maximize = "Maximize",
+    showDesktop = "Show Desktop",
+    cascadeAll = "Cascade All",
+    cascadeApp = "Cascade App",
+    snapAll = "Snap All",
+    moveToNextScreen = "Next Screen",
+    moveToPrevScreen = "Prev Screen",
+    moveToScreen1 = "Screen 1",
+    moveToScreen2 = "Screen 2",
+    moveToScreen3 = "Screen 3",
+    center = "Center",
+    centerSmall = "Center Small",
+    centerLarge = "Center Large",
+    leftThird = "Left ⅓",
+    centerThird = "Center ⅓",
+    rightThird = "Right ⅓",
+    leftTwoThirds = "Left ⅔",
+    rightTwoThirds = "Right ⅔",
+    gatherWindows = "Gather All",
+    gatherAppWindows = "Gather App",
+    swapWindows = "Swap Windows",
+    toggleStageManager = "Stage Manager",
+    focusMode = "Focus Mode",
 }
 
 -- Internal state
@@ -1039,8 +1076,9 @@ function obj:bindHotkeys(mapping)
     -- Create hotkeys
     for action, key in pairs(bindings) do
         if key and self.actions[action] then
-            -- Include action name as message for cheat sheet discovery
-            local hk = hotkey.new(self.modifiers, key, action, self.actions[action])
+            -- Use human-readable description for cheat sheet discovery
+            local description = self.actionDescriptions[action] or action
+            local hk = hotkey.new(self.modifiers, key, description, self.actions[action])
             table.insert(self._hotkeys, hk)
         end
     end

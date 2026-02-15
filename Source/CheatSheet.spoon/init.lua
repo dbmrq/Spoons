@@ -57,6 +57,27 @@ obj.font = "SF Pro"
 --- Font size for the cheat sheet. Default: 14
 obj.fontSize = 14
 
+--- CheatSheet.position
+--- Variable
+--- Position of the cheat sheet on screen. Options: "center", "bottomLeft",
+--- "bottomRight", "topLeft", "topRight". Default: "bottomLeft"
+obj.position = "bottomLeft"
+
+--- CheatSheet.keyOrder
+--- Variable
+--- Custom ordering for keys. Keys listed here appear first in this order.
+--- Keys not listed are sorted alphabetically after these.
+--- Default: logical grouping for common keys
+obj.keyOrder = {
+    -- Vim-style navigation (hjkl)
+    "H", "J", "K", "L",
+    -- Arrow keys
+    "Left", "Down", "Up", "Right",
+    -- Numbers
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    -- Letters (alphabetically for the rest)
+}
+
 ---------------------------------------------------------------------------
 -- Internal State
 ---------------------------------------------------------------------------
@@ -145,7 +166,7 @@ end
 ---------------------------------------------------------------------------
 
 -- Get all hotkeys matching our modifiers
-local function getMatchingHotkeys(targetMods)
+local function getMatchingHotkeys(targetMods, keyOrder)
     local hotkeys = hs.hotkey.getHotkeys()
     local matching = {}
 
@@ -161,8 +182,23 @@ local function getMatchingHotkeys(targetMods)
         end
     end
 
-    -- Sort by key for consistent display
-    table.sort(matching, function(a, b) return a.key < b.key end)
+    -- Build key order lookup table
+    local orderLookup = {}
+    for i, k in ipairs(keyOrder or {}) do
+        orderLookup[k:upper()] = i
+        orderLookup[k:lower()] = i
+        orderLookup[k] = i
+    end
+
+    -- Sort by custom order, then alphabetically
+    table.sort(matching, function(a, b)
+        local aOrder = orderLookup[a.key] or 9999
+        local bOrder = orderLookup[b.key] or 9999
+        if aOrder ~= bOrder then
+            return aOrder < bOrder
+        end
+        return a.key < b.key
+    end)
     return matching
 end
 
@@ -174,12 +210,13 @@ end
 function obj:_createCanvas()
     local screen = hs.screen.mainScreen()
     local frame = screen:frame()
-    local hotkeys = getMatchingHotkeys(self._modFlags)
+    local hotkeys = getMatchingHotkeys(self._modFlags, self.keyOrder)
 
     if #hotkeys == 0 then return nil end
 
     -- Calculate layout
     local padding = 30
+    local margin = 20  -- Distance from screen edge
     local lineHeight = self.fontSize + 10
     local keyWidth = 60
     local descWidth = 200
@@ -194,9 +231,25 @@ function obj:_createCanvas()
     local canvasWidth = numCols * colWidth + padding * 2
     local canvasHeight = (rowsPerCol + 1) * lineHeight + padding * 2
 
-    -- Center on screen
-    local x = frame.x + (frame.w - canvasWidth) / 2
-    local y = frame.y + (frame.h - canvasHeight) / 2
+    -- Position based on self.position setting
+    local x, y
+    local pos = self.position or "center"
+    if pos == "bottomLeft" then
+        x = frame.x + margin
+        y = frame.y + frame.h - canvasHeight - margin
+    elseif pos == "bottomRight" then
+        x = frame.x + frame.w - canvasWidth - margin
+        y = frame.y + frame.h - canvasHeight - margin
+    elseif pos == "topLeft" then
+        x = frame.x + margin
+        y = frame.y + margin
+    elseif pos == "topRight" then
+        x = frame.x + frame.w - canvasWidth - margin
+        y = frame.y + margin
+    else  -- center
+        x = frame.x + (frame.w - canvasWidth) / 2
+        y = frame.y + (frame.h - canvasHeight) / 2
+    end
 
     local canvas = hs.canvas.new({x = x, y = y, w = canvasWidth, h = canvasHeight})
 
