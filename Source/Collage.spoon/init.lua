@@ -90,18 +90,18 @@ obj.copyOnSelectExcludedApps = {
 
 --- Collage.flashOnCopy
 --- Variable
---- Flash the menu icon when an item is added. Default: true
+--- Flash (blink) the menu icon when an item is added. Default: true
 obj.flashOnCopy = true
 
---- Collage.flashIcon
+--- Collage.flashCount
 --- Variable
---- Icon to show during flash. Default: "📋"
-obj.flashIcon = "📋"
+--- Number of times to blink. Default: 2
+obj.flashCount = 2
 
---- Collage.flashDuration
+--- Collage.flashInterval
 --- Variable
---- Duration of flash in seconds. Default: 0.3
-obj.flashDuration = 0.3
+--- Interval between blinks in seconds. Default: 0.1
+obj.flashInterval = 0.1
 
 -- Internal state
 obj._menu = nil
@@ -163,22 +163,39 @@ end
 function obj:_flashMenu()
     if not self.flashOnCopy or not self._menu then return end
 
-    -- Cancel any pending flash restoration
+    -- Cancel any pending flash
     if self._flashTimer then
         self._flashTimer:stop()
         self._flashTimer = nil
     end
 
-    -- Show flash icon
-    self._menu:setTitle(self.flashIcon)
+    -- Blink: hide and show the icon multiple times
+    local count = 0
+    local maxBlinks = self.flashCount * 2  -- Each blink = hide + show
+    local interval = self.flashInterval
 
-    -- Restore original icon after delay
-    self._flashTimer = hs.timer.doAfter(self.flashDuration, function()
-        if self._menu then
+    local function doBlink()
+        if not self._menu then return end
+        count = count + 1
+        if count > maxBlinks then
+            -- Ensure we end with the icon visible
+            self._menu:setTitle(self.menuTitle)
+            self._flashTimer = nil
+            return
+        end
+
+        if count % 2 == 1 then
+            -- Odd: hide
+            self._menu:setTitle("")
+        else
+            -- Even: show
             self._menu:setTitle(self.menuTitle)
         end
-        self._flashTimer = nil
-    end)
+
+        self._flashTimer = hs.timer.doAfter(interval, doBlink)
+    end
+
+    doBlink()
 end
 
 function obj:_getMergedHistory()
@@ -312,8 +329,35 @@ function obj:_shouldCopyOnSelect()
     return true
 end
 
+-- Get selected text from Safari using AppleScript/JavaScript
+function obj:_getSafariSelection()
+    local script = [[
+        tell application "Safari"
+            if (count of windows) = 0 then return ""
+            if (count of tabs of front window) = 0 then return ""
+            set selectedText to do JavaScript "window.getSelection().toString();" in current tab of front window
+            return selectedText
+        end tell
+    ]]
+    local ok, result = hs.osascript.applescript(script)
+    if ok and result and result ~= "" then
+        return result
+    end
+    return nil
+end
+
 -- Get current text selection using accessibility API
 function obj:_getSelectedText()
+    -- Check for browser-specific handling first
+    local app = hs.application.frontmostApplication()
+    if app then
+        local bundleID = app:bundleID()
+        if bundleID == "com.apple.Safari" then
+            return self:_getSafariSelection()
+        end
+    end
+
+    -- Standard accessibility API approach
     local systemElement = hs.axuielement.systemWideElement()
     if not systemElement then return nil end
 
@@ -326,13 +370,10 @@ function obj:_getSelectedText()
         return selectedText
     end
 
-    -- For web browsers, selection might be in a child element or require
-    -- traversing the hierarchy. Try getting selected text from the app.
-    local app = hs.application.frontmostApplication()
+    -- Try getting selected text from the app element
     if app then
         local appElement = hs.axuielement.applicationElement(app)
         if appElement then
-            -- Try AXSelectedText on the app element
             selectedText = appElement:attributeValue("AXSelectedText")
             if selectedText and selectedText ~= "" then
                 return selectedText
