@@ -3,6 +3,7 @@
 --- Clipboard manager with customizable menu for utilities.
 --- Stores clipboard history from Cmd+C (copy) and Cmd+X (cut) operations.
 --- Cut items persist longer than copy items. Allows adding custom menu items and submenus.
+--- Optional copy-on-selection feature (like terminal emulators).
 ---
 --- Download: [https://github.com/dbmrq/Spoons/raw/master/Spoons/Collage.spoon.zip](https://github.com/dbmrq/Spoons/raw/master/Spoons/Collage.spoon.zip)
 
@@ -11,7 +12,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "Collage"
-obj.version = "1.0"
+obj.version = "1.1"
 obj.author = "Daniel Marques <danielbmarques@gmail.com>"
 obj.license = "MIT"
 obj.homepage = "https://github.com/dbmrq/Spoons"
@@ -61,6 +62,32 @@ obj.cutModifiers = {"cmd"}
 --- Key for cut hotkey. Default: "x"
 obj.cutKey = "x"
 
+--- Collage.copyOnSelect
+--- Variable
+--- Enable copy-on-selection (like terminal emulators). Default: false
+--- When enabled, selecting text automatically copies it to clipboard.
+obj.copyOnSelect = false
+
+--- Collage.copyOnSelectApps
+--- Variable
+--- Table of app bundle IDs where copy-on-selection should be active.
+--- If empty and copyOnSelect is true, it applies to all apps except excludedApps.
+--- Example: { ["com.apple.Safari"] = true, ["com.apple.Notes"] = true }
+obj.copyOnSelectApps = {}
+
+--- Collage.copyOnSelectExcludedApps
+--- Variable
+--- Table of app bundle IDs where copy-on-selection should NOT apply.
+--- These are typically terminal emulators that already have this feature.
+obj.copyOnSelectExcludedApps = {
+    ["com.apple.Terminal"] = true,
+    ["com.googlecode.iterm2"] = true,
+    ["com.mitchellh.ghostty"] = true,
+    ["org.alacritty"] = true,
+    ["io.alacritty"] = true,
+    ["net.kovidgoyal.kitty"] = true,
+}
+
 -- Internal state
 obj._menu = nil
 obj._copyHotkey = nil
@@ -69,6 +96,8 @@ obj._copyHistory = {}
 obj._cutHistory = {}
 obj._customItems = {}
 obj._customSubmenus = {}
+obj._selectionWatcher = nil
+obj._lastSelection = nil
 
 local pasteboard = require("hs.pasteboard")
 local settings = require("hs.settings")
@@ -221,6 +250,60 @@ function obj:_storeCopy(isCut)
     end
 end
 
+-- Check if copy-on-select should be active for the current app
+function obj:_shouldCopyOnSelect()
+    if not self.copyOnSelect then return false end
+
+    local app = hs.application.frontmostApplication()
+    if not app then return false end
+
+    local bundleID = app:bundleID()
+    if not bundleID then return false end
+
+    -- Check exclusion list first
+    if self.copyOnSelectExcludedApps[bundleID] then
+        return false
+    end
+
+    -- If whitelist is specified, only allow those apps
+    if next(self.copyOnSelectApps) then
+        return self.copyOnSelectApps[bundleID] or false
+    end
+
+    -- No whitelist means all non-excluded apps
+    return true
+end
+
+-- Get current text selection using accessibility API
+function obj:_getSelectedText()
+    local systemElement = hs.axuielement.systemWideElement()
+    if not systemElement then return nil end
+
+    local focusedElement = systemElement:attributeValue("AXFocusedUIElement")
+    if not focusedElement then return nil end
+
+    local selectedText = focusedElement:attributeValue("AXSelectedText")
+    if selectedText and selectedText ~= "" then
+        return selectedText
+    end
+
+    return nil
+end
+
+-- Handle selection change - copy if there's a new selection
+function obj:_handleSelectionChange()
+    if not self:_shouldCopyOnSelect() then return end
+
+    local selection = self:_getSelectedText()
+    if selection and selection ~= self._lastSelection then
+        self._lastSelection = selection
+        pasteboard.setContents(selection)
+        self:_addToHistory(selection, false)
+    elseif not selection then
+        self._lastSelection = nil
+    end
+end
+
 --- Collage:clearHistory()
 --- Method
 --- Clear all clipboard history
@@ -339,6 +422,22 @@ function obj:start()
         hs.timer.doAfter(0.1, function() self:_storeCopy(true) end)
     end)
 
+    -- Copy-on-selection watcher (monitors mouse up events to check for selection)
+    if self._selectionWatcher then
+        self._selectionWatcher:stop()
+    end
+    if self.copyOnSelect then
+        self._selectionWatcher = hs.eventtap.new(
+            {hs.eventtap.event.types.leftMouseUp},
+            function()
+                -- Small delay to let the selection be registered
+                hs.timer.doAfter(0.05, function() self:_handleSelectionChange() end)
+                return false -- Don't consume the event
+            end
+        )
+        self._selectionWatcher:start()
+    end
+
     return self
 end
 
@@ -356,6 +455,10 @@ function obj:stop()
     if self._cutHotkey then
         self._cutHotkey:delete()
         self._cutHotkey = nil
+    end
+    if self._selectionWatcher then
+        self._selectionWatcher:stop()
+        self._selectionWatcher = nil
     end
     if self._menu then
         self._menu:delete()
