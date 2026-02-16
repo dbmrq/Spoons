@@ -48,6 +48,15 @@ obj.cascadeSpacing = 40
 --- Modifier keys for all hotkeys. Default: {"ctrl", "alt", "cmd"}
 obj.modifiers = {"ctrl", "alt", "cmd"}
 
+--- WinMan.mode
+--- Variable
+--- Window management mode: "simple" (direct bindings) or "zellij" (modal bindings).
+--- In "zellij" mode, uses modal system matching Zellij's patterns:
+---   Super+p = Focus mode, Super+n = Resize mode, Super+h = Move mode, Super+t = Spaces mode
+--- In "simple" mode, uses direct bindings (HJKL resize, arrows move).
+--- Default: "simple" (backwards compatible)
+obj.mode = "simple"
+
 --- WinMan.slowResizeApps
 --- Variable
 --- Apps that need delayed cascade check due to slow resize. Default: {"Terminal", "MacVim"}
@@ -173,6 +182,10 @@ obj._windowFilter = nil  -- For tracking window focus
 obj._lastFocusedWindow = nil  -- For swap windows feature
 obj._previousFocusedWindow = nil  -- The window before the last focused
 obj._stageManagerEnabled = false  -- Track Stage Manager state
+
+-- Modal state (for zellij mode)
+obj._modals = {}  -- Stores hs.hotkey.modal objects
+obj._currentModal = nil  -- Currently active modal name
 
 ---------------------------------------------------------------------------
 -- Private Helper Functions
@@ -1039,10 +1052,314 @@ function obj.actions.focusMode()
     end
 end
 
+---------------------------------------------------------------------------
+-- Zellij Mode: Focus Direction Actions
+---------------------------------------------------------------------------
+
+-- Focus window in a direction
+function obj.actions.focusWest()
+    local win = window.focusedWindow()
+    if win then win:focusWindowWest(nil, true, true) end
+end
+
+function obj.actions.focusSouth()
+    local win = window.focusedWindow()
+    if win then win:focusWindowSouth(nil, true, true) end
+end
+
+function obj.actions.focusNorth()
+    local win = window.focusedWindow()
+    if win then win:focusWindowNorth(nil, true, true) end
+end
+
+function obj.actions.focusEast()
+    local win = window.focusedWindow()
+    if win then win:focusWindowEast(nil, true, true) end
+end
+
+-- Cycle through cascaded/overlapping windows (z-order)
+function obj.actions.focusNextInStack()
+    local orderedWindows = window.orderedWindows()
+    if #orderedWindows < 2 then return end
+
+    -- Focus the next window in z-order (the one behind current)
+    local nextWin = orderedWindows[2]
+    if nextWin then nextWin:focus() end
+end
+
+function obj.actions.focusPrevInStack()
+    local orderedWindows = window.orderedWindows()
+    if #orderedWindows < 2 then return end
+
+    -- Focus the last window in z-order (bring to front)
+    local lastWin = orderedWindows[#orderedWindows]
+    if lastWin then lastWin:focus() end
+end
+
+-- Close window
+function obj.actions.closeWindow()
+    local win = window.focusedWindow()
+    if win then win:close() end
+end
+
+---------------------------------------------------------------------------
+-- Zellij Mode: Pure Resize Actions (no snapping/moving)
+---------------------------------------------------------------------------
+
+-- Pure resize: just grow or shrink without changing position
+function obj.actions.pureResizeShrinkWidth()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.resizeWindowThinner()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureResizeGrowWidth()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.resizeWindowWider()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureResizeShrinkHeight()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.resizeWindowShorter()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureResizeGrowHeight()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.resizeWindowTaller()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+---------------------------------------------------------------------------
+-- Zellij Mode: Pure Move Actions (no resizing)
+---------------------------------------------------------------------------
+
+function obj.actions.pureMoveLeft()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.pushWindowLeft()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureMoveRight()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.pushWindowRight()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureMoveUp()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.pushWindowUp()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+function obj.actions.pureMoveDown()
+    local win = window.focusedWindow()
+    if not win then return end
+    local scr = win:screen()
+    if not scr then return end
+    applyGridForScreen(scr)
+    grid.pushWindowDown()
+    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
+end
+
+---------------------------------------------------------------------------
+-- Zellij Mode: Spaces Actions
+---------------------------------------------------------------------------
+
+function obj.actions.spaceLeft()
+    if hs.spaces and hs.spaces.gotoSpace then
+        local currentSpace = hs.spaces.focusedSpace()
+        local allSpaces = hs.spaces.spacesForScreen()
+        if allSpaces and currentSpace then
+            for i, space in ipairs(allSpaces) do
+                if space == currentSpace and i > 1 then
+                    hs.spaces.gotoSpace(allSpaces[i - 1])
+                    return
+                end
+            end
+        end
+    end
+    -- Fallback: simulate Ctrl+Left arrow
+    hs.eventtap.keyStroke({"ctrl"}, "left", 0)
+end
+
+function obj.actions.spaceRight()
+    if hs.spaces and hs.spaces.gotoSpace then
+        local currentSpace = hs.spaces.focusedSpace()
+        local allSpaces = hs.spaces.spacesForScreen()
+        if allSpaces and currentSpace then
+            for i, space in ipairs(allSpaces) do
+                if space == currentSpace and i < #allSpaces then
+                    hs.spaces.gotoSpace(allSpaces[i + 1])
+                    return
+                end
+            end
+        end
+    end
+    -- Fallback: simulate Ctrl+Right arrow
+    hs.eventtap.keyStroke({"ctrl"}, "right", 0)
+end
+
+function obj.actions.spaceNew()
+    -- Open Mission Control and click the + button to create a new Space
+    -- This requires accessibility permissions
+    hs.osascript.applescript([[
+        tell application "System Events"
+            -- Open Mission Control (Ctrl+Up or F3 depending on settings)
+            key code 126 using control down
+            delay 0.5
+            -- Click the "+" button to add a new space
+            -- The button is in the spaces bar at the top
+            try
+                click button 1 of group 2 of group 1 of group 1 of process "Dock"
+            end try
+        end tell
+    ]])
+end
 
 ---------------------------------------------------------------------------
 -- Spoon Methods
 ---------------------------------------------------------------------------
+
+---------------------------------------------------------------------------
+-- Modal System (for zellij mode)
+---------------------------------------------------------------------------
+
+-- Helper to create a modal with common setup
+local function createModal(spoonObj, name, hints)
+    local modal = hotkey.modal.new()
+
+    function modal:entered()
+        spoonObj._currentModal = name
+        hs.alert.show(name .. " Mode", 0.5)
+        if spoon.CheatSheet and spoon.CheatSheet.showModeHints then
+            spoon.CheatSheet:showModeHints(name, hints)
+        end
+    end
+
+    function modal:exited()
+        spoonObj._currentModal = nil
+        if spoon.CheatSheet and spoon.CheatSheet.hideModeHints then
+            spoon.CheatSheet:hideModeHints()
+        end
+    end
+
+    modal:bind({}, "escape", function() modal:exit() end)
+    modal:bind({}, "return", function() modal:exit() end)
+
+    return modal
+end
+
+-- Set up modal bindings for zellij mode
+function obj:_setupModals()
+    for _, modal in pairs(self._modals) do
+        modal:exit()
+    end
+    self._modals = {}
+
+    local mods = self.modifiers
+
+    -- Focus mode (Super+p): hjkl focus, f maximize, x close
+    local focusHints = {
+        {"h", "Focus left"}, {"j", "Focus down / next in stack"},
+        {"k", "Focus up / prev in stack"}, {"l", "Focus right"},
+        {"f", "Maximize"}, {"x", "Close window"},
+        {"Esc/Enter", "Exit mode"},
+    }
+    local focusModal = createModal(self, "Focus", focusHints)
+    focusModal:bind({}, "h", function() self.actions.focusWest() end)
+    focusModal:bind({}, "j", function() self.actions.focusNextInStack() end)
+    focusModal:bind({}, "k", function() self.actions.focusPrevInStack() end)
+    focusModal:bind({}, "l", function() self.actions.focusEast() end)
+    focusModal:bind({}, "f", function() self.actions.maximize(); focusModal:exit() end)
+    focusModal:bind({}, "x", function() self.actions.closeWindow(); focusModal:exit() end)
+    self._modals.focus = focusModal
+
+    local focusEntry = hotkey.new(mods, "p", "Focus Mode", function() focusModal:enter() end)
+    table.insert(self._hotkeys, focusEntry)
+
+    -- Resize mode (Super+n): hjkl pure resize
+    local resizeHints = {
+        {"h", "Shrink width"}, {"l", "Grow width"},
+        {"j", "Shrink height"}, {"k", "Grow height"},
+        {"Esc/Enter", "Exit mode"},
+    }
+    local resizeModal = createModal(self, "Resize", resizeHints)
+    resizeModal:bind({}, "h", function() self.actions.pureResizeShrinkWidth() end)
+    resizeModal:bind({}, "l", function() self.actions.pureResizeGrowWidth() end)
+    resizeModal:bind({}, "j", function() self.actions.pureResizeShrinkHeight() end)
+    resizeModal:bind({}, "k", function() self.actions.pureResizeGrowHeight() end)
+    self._modals.resize = resizeModal
+
+    local resizeEntry = hotkey.new(mods, "n", "Resize Mode", function() resizeModal:enter() end)
+    table.insert(self._hotkeys, resizeEntry)
+
+    -- Move mode (Super+h): hjkl move, 1/2/3 screen, c/a cascade
+    local moveHints = {
+        {"h/j/k/l", "Move in grid"},
+        {"1/2/3", "Move to screen"},
+        {"c", "Cascade all"}, {"a", "Cascade app"},
+        {"Esc/Enter", "Exit mode"},
+    }
+    local moveModal = createModal(self, "Move", moveHints)
+    moveModal:bind({}, "h", function() self.actions.pureMoveLeft() end)
+    moveModal:bind({}, "l", function() self.actions.pureMoveRight() end)
+    moveModal:bind({}, "j", function() self.actions.pureMoveDown() end)
+    moveModal:bind({}, "k", function() self.actions.pureMoveUp() end)
+    moveModal:bind({}, "1", function() self.actions.moveToScreen1(); moveModal:exit() end)
+    moveModal:bind({}, "2", function() self.actions.moveToScreen2(); moveModal:exit() end)
+    moveModal:bind({}, "3", function() self.actions.moveToScreen3(); moveModal:exit() end)
+    moveModal:bind({}, "c", function() self.actions.cascadeAll(); moveModal:exit() end)
+    moveModal:bind({}, "a", function() self.actions.cascadeApp(); moveModal:exit() end)
+    self._modals.move = moveModal
+
+    local moveEntry = hotkey.new(mods, "h", "Move Mode", function() moveModal:enter() end)
+    table.insert(self._hotkeys, moveEntry)
+
+    -- Spaces mode (Super+t): h/l switch, n new
+    local spacesHints = {
+        {"h", "Previous Space"}, {"l", "Next Space"},
+        {"n", "New Space"},
+        {"Esc/Enter", "Exit mode"},
+    }
+    local spacesModal = createModal(self, "Spaces", spacesHints)
+    spacesModal:bind({}, "h", function() self.actions.spaceLeft() end)
+    spacesModal:bind({}, "l", function() self.actions.spaceRight() end)
+    spacesModal:bind({}, "n", function() self.actions.spaceNew(); spacesModal:exit() end)
+    self._modals.spaces = spacesModal
+
+    local spacesEntry = hotkey.new(mods, "t", "Spaces Mode", function() spacesModal:enter() end)
+    table.insert(self._hotkeys, spacesEntry)
+end
 
 --- WinMan:bindHotkeys(mapping)
 --- Method
@@ -1052,6 +1369,7 @@ end
 ---  * mapping - (optional) Table mapping action names to keys.
 ---              If nil, uses defaultBindings. Set a binding to `false` to disable it.
 ---              Keys use obj.modifiers as the modifier keys.
+---              Only used in "simple" mode; "zellij" mode uses fixed modal bindings.
 ---
 --- Returns:
 ---  * The WinMan object
@@ -1062,24 +1380,37 @@ function obj:bindHotkeys(mapping)
     end
     self._hotkeys = {}
 
-    -- Merge with defaults
-    local bindings = {}
-    for action, key in pairs(self.defaultBindings) do
-        bindings[action] = key
+    -- Clear existing modals
+    for _, modal in pairs(self._modals) do
+        modal:exit()
+        -- Note: hs.hotkey.modal doesn't have delete(), just exit and clear reference
     end
-    if mapping then
-        for action, key in pairs(mapping) do
+    self._modals = {}
+
+    -- Setup based on mode
+    if self.mode == "zellij" then
+        self:_setupModals()
+    else
+        -- Simple mode: use direct bindings (original behavior)
+        -- Merge with defaults
+        local bindings = {}
+        for action, key in pairs(self.defaultBindings) do
             bindings[action] = key
         end
-    end
+        if mapping then
+            for action, key in pairs(mapping) do
+                bindings[action] = key
+            end
+        end
 
-    -- Create hotkeys
-    for action, key in pairs(bindings) do
-        if key and self.actions[action] then
-            -- Use human-readable description for cheat sheet discovery
-            local description = self.actionDescriptions[action] or action
-            local hk = hotkey.new(self.modifiers, key, description, self.actions[action])
-            table.insert(self._hotkeys, hk)
+        -- Create hotkeys
+        for action, key in pairs(bindings) do
+            if key and self.actions[action] then
+                -- Use human-readable description for cheat sheet discovery
+                local description = self.actionDescriptions[action] or action
+                local hk = hotkey.new(self.modifiers, key, description, self.actions[action])
+                table.insert(self._hotkeys, hk)
+            end
         end
     end
 
@@ -1152,13 +1483,18 @@ end
 
 --- WinMan:stop()
 --- Method
---- Stops WinMan - disables all hotkeys, screen watcher, and window filter
+--- Stops WinMan - disables all hotkeys, modals, screen watcher, and window filter
 ---
 --- Returns:
 ---  * The WinMan object
 function obj:stop()
     for _, hk in ipairs(self._hotkeys) do
         hk:disable()
+    end
+
+    -- Exit and clean up modals
+    for _, modal in pairs(self._modals) do
+        modal:exit()
     end
 
     if self._screenWatcher then

@@ -129,7 +129,9 @@ obj._eventtap = nil
 obj._timer = nil
 obj._visible = false
 obj._modFlags = {}
-obj._currentSheet = nil  -- "main" or "readline"
+obj._currentSheet = nil  -- "main", "readline", or "mode"
+obj._modeHintsCanvas = nil  -- Separate canvas for mode hints (from WinMan)
+obj._modeHintsVisible = false
 
 ---------------------------------------------------------------------------
 -- Modifier Utilities
@@ -265,8 +267,10 @@ local function getMatchingHotkeys(targetMods, keyOrder)
             local desc = hk.msg or ""
             -- Remove the idx prefix if present
             desc = desc:gsub("^" .. hk.idx:gsub("([%%%^%$%(%)%.%[%]%*%+%-%?])", "%%%1") .. "%s*", "")
-            if desc == "" then desc = key end
-            table.insert(matching, {key = key, desc = desc})
+            -- Skip hotkeys without a meaningful description (empty or just whitespace)
+            if desc ~= "" and desc:match("%S") then
+                table.insert(matching, {key = key, desc = desc})
+            end
         end
     end
 
@@ -584,6 +588,102 @@ function obj:bindHotkeys(mapping)
         toggle = hs.fnutils.partial(self.toggle, self)
     }
     hs.spoons.bindHotkeysToSpec(spec, mapping)
+    return self
+end
+
+---------------------------------------------------------------------------
+-- Mode Hints API (for WinMan modal integration)
+---------------------------------------------------------------------------
+
+--- CheatSheet:showModeHints(modeName, hints)
+--- Method
+--- Show a mode-specific hint overlay (called by WinMan when entering a modal)
+---
+--- Parameters:
+---  * modeName - String name of the mode (e.g., "Focus", "Resize")
+---  * hints - Table of {key, description} pairs to display
+---
+--- Returns:
+---  * The CheatSheet object
+function obj:showModeHints(modeName, hints)
+    -- Hide any existing mode hints
+    self:hideModeHints()
+
+    if not hints or #hints == 0 then return self end
+
+    local screen = hs.screen.mainScreen()
+    local frame = screen:frame()
+
+    local padding = 20
+    local lineHeight = self.fontSize + 8
+    local keyWidth = 80
+    local descWidth = 160
+    local entryWidth = keyWidth + descWidth
+
+    -- Calculate dimensions
+    local numEntries = #hints
+    local canvasWidth = entryWidth + padding * 2
+    local canvasHeight = (numEntries + 1) * lineHeight + padding * 2
+
+    -- Position at bottom-left (matching main position)
+    local x, y = frame.x + 20, frame.y + frame.h - canvasHeight - 20
+
+    local canvas = hs.canvas.new({x = x, y = y, w = canvasWidth, h = canvasHeight})
+
+    -- Background
+    canvas:appendElements({
+        type = "rectangle", action = "fill", fillColor = self.bgColor,
+        roundedRectRadii = {xRadius = 10, yRadius = 10},
+    })
+
+    -- Title
+    canvas:appendElements({
+        type = "text", text = "[" .. modeName .. " Mode]",
+        textColor = self.highlightColor, textFont = self.font,
+        textSize = self.fontSize + 2,
+        frame = {x = padding, y = padding, w = canvasWidth - padding * 2, h = lineHeight},
+    })
+
+    -- Hints
+    for i, hint in ipairs(hints) do
+        local yPos = padding + i * lineHeight
+
+        -- Key
+        canvas:appendElements({
+            type = "text", text = hint[1],
+            textColor = self.highlightColor, textFont = self.font,
+            textSize = self.fontSize, textAlignment = "right",
+            frame = {x = padding, y = yPos, w = keyWidth - 10, h = lineHeight},
+        })
+
+        -- Description
+        canvas:appendElements({
+            type = "text", text = hint[2],
+            textColor = self.textColor, textFont = self.font,
+            textSize = self.fontSize,
+            frame = {x = padding + keyWidth, y = yPos, w = descWidth, h = lineHeight},
+        })
+    end
+
+    canvas:show()
+    self._modeHintsCanvas = canvas
+    self._modeHintsVisible = true
+
+    return self
+end
+
+--- CheatSheet:hideModeHints()
+--- Method
+--- Hide the mode hints overlay
+---
+--- Returns:
+---  * The CheatSheet object
+function obj:hideModeHints()
+    if self._modeHintsCanvas then
+        self._modeHintsCanvas:delete()
+        self._modeHintsCanvas = nil
+    end
+    self._modeHintsVisible = false
     return self
 end
 
