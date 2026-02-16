@@ -329,56 +329,17 @@ function obj:_shouldCopyOnSelect()
     return true
 end
 
--- Get selected text from Safari using AppleScript/JavaScript
-function obj:_getSafariSelection()
-    local script = [[
-        tell application "Safari"
-            if (count of windows) = 0 then return ""
-            if (count of tabs of front window) = 0 then return ""
-            set selectedText to do JavaScript "window.getSelection().toString();" in current tab of front window
-            return selectedText
-        end tell
-    ]]
-    local ok, result = hs.osascript.applescript(script)
-    if ok and result and result ~= "" then
-        return result
-    end
-    return nil
-end
-
 -- Get current text selection using accessibility API
 function obj:_getSelectedText()
-    -- Check for browser-specific handling first
-    local app = hs.application.frontmostApplication()
-    if app then
-        local bundleID = app:bundleID()
-        if bundleID == "com.apple.Safari" then
-            return self:_getSafariSelection()
-        end
-    end
-
-    -- Standard accessibility API approach
     local systemElement = hs.axuielement.systemWideElement()
     if not systemElement then return nil end
 
     local focusedElement = systemElement:attributeValue("AXFocusedUIElement")
     if not focusedElement then return nil end
 
-    -- Try AXSelectedText on focused element first
     local selectedText = focusedElement:attributeValue("AXSelectedText")
     if selectedText and selectedText ~= "" then
         return selectedText
-    end
-
-    -- Try getting selected text from the app element
-    if app then
-        local appElement = hs.axuielement.applicationElement(app)
-        if appElement then
-            selectedText = appElement:attributeValue("AXSelectedText")
-            if selectedText and selectedText ~= "" then
-                return selectedText
-            end
-        end
     end
 
     return nil
