@@ -2,6 +2,7 @@
 ---
 --- Emacs/readline-style keybindings for text editing across macOS apps.
 --- Provides word navigation, selection, deletion, and line kill commands.
+--- Hotkeys are only active when the focused element is a text input field.
 ---
 --- Download: [https://github.com/dbmrq/Spoons/raw/master/Spoons/Readline.spoon.zip](https://github.com/dbmrq/Spoons/raw/master/Spoons/Readline.spoon.zip)
 
@@ -10,10 +11,32 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "Readline"
-obj.version = "1.0"
+obj.version = "1.1"
 obj.author = "Daniel Marques <danielbmarques@gmail.com>"
 obj.license = "MIT"
 obj.homepage = "https://github.com/dbmrq/Spoons"
+
+-- Text input AXRoles that should trigger readline bindings
+local TEXT_INPUT_ROLES = {
+    AXTextField = true,
+    AXTextArea = true,
+    AXComboBox = true,
+    AXSearchField = true,
+}
+
+--- Readline.excludedApps
+--- Variable
+--- Table of application bundle IDs where Readline hotkeys should never be active.
+--- These are typically terminal emulators or apps with their own readline/vim bindings.
+--- Default: { "com.apple.Terminal", "com.googlecode.iterm2", "com.mitchellh.ghostty", "org.alacritty" }
+obj.excludedApps = {
+    ["com.apple.Terminal"] = true,
+    ["com.googlecode.iterm2"] = true,
+    ["com.mitchellh.ghostty"] = true,
+    ["org.alacritty"] = true,
+    ["io.alacritty"] = true,
+    ["net.kovidgoyal.kitty"] = true,
+}
 
 --- Readline.actions
 --- Variable
@@ -66,12 +89,61 @@ obj.defaultBindings = {
     killToStart       = {{"ctrl"}, "u"},
 }
 
--- Internal: stored hotkeys for cleanup
-obj._hotkeys = {}
+-- Internal state
+obj._eventtap = nil
+obj._bindings = nil
+
+-- Check if the current focused element is a text input field
+local function isTextInputFocused()
+    -- Check if current app is excluded (terminal emulators, etc.)
+    local app = hs.application.frontmostApplication()
+    if app then
+        local bundleID = app:bundleID()
+        if bundleID and obj.excludedApps[bundleID] then
+            return false
+        end
+    end
+
+    -- Get the focused UI element
+    local systemElement = hs.axuielement.systemWideElement()
+    if not systemElement then return false end
+
+    local focusedElement = systemElement:attributeValue("AXFocusedUIElement")
+    if not focusedElement then return false end
+
+    local role = focusedElement:attributeValue("AXRole")
+    return role and TEXT_INPUT_ROLES[role] or false
+end
+
+-- Normalize modifier flags to a set of modifier names
+local function normalizeModifiers(flags)
+    local mods = {}
+    if flags.alt or flags["⌥"] then mods.alt = true end
+    if flags.ctrl or flags["⌃"] then mods.ctrl = true end
+    if flags.cmd or flags["⌘"] then mods.cmd = true end
+    if flags.shift or flags["⇧"] then mods.shift = true end
+    return mods
+end
+
+-- Check if modifiers match (exact match)
+local function modifiersMatch(eventMods, bindingMods)
+    local eventSet = normalizeModifiers(eventMods)
+    local bindingSet = {}
+    for _, mod in ipairs(bindingMods) do
+        bindingSet[mod] = true
+    end
+    -- Check exact match
+    for _, mod in ipairs({"alt", "ctrl", "cmd", "shift"}) do
+        if (eventSet[mod] or false) ~= (bindingSet[mod] or false) then
+            return false
+        end
+    end
+    return true
+end
 
 --- Readline:bindHotkeys(mapping)
 --- Method
---- Binds hotkeys for Readline actions
+--- Configures the hotkey bindings for Readline actions
 ---
 --- Parameters:
 ---  * mapping - (optional) Table mapping action names to hotkey specs {modifiers, key}.
@@ -80,12 +152,6 @@ obj._hotkeys = {}
 --- Returns:
 ---  * The Readline object
 function obj:bindHotkeys(mapping)
-    -- Clear existing hotkeys
-    for _, hk in ipairs(self._hotkeys) do
-        hk:delete()
-    end
-    self._hotkeys = {}
-
     -- Merge with defaults
     local bindings = {}
     for action, binding in pairs(self.defaultBindings) do
@@ -97,11 +163,15 @@ function obj:bindHotkeys(mapping)
         end
     end
 
-    -- Create hotkeys
+    -- Store processed bindings for the eventtap
+    self._bindings = {}
     for action, binding in pairs(bindings) do
         if binding and self.actions[action] then
-            local hk = hs.hotkey.new(binding[1], binding[2], self.actions[action])
-            table.insert(self._hotkeys, hk)
+            table.insert(self._bindings, {
+                modifiers = binding[1],
+                key = binding[2]:lower(),
+                action = self.actions[action],
+            })
         end
     end
 
@@ -110,17 +180,44 @@ end
 
 --- Readline:start()
 --- Method
---- Enables the Readline hotkeys
+--- Enables the Readline hotkeys (only active in text input fields)
 ---
 --- Returns:
 ---  * The Readline object
 function obj:start()
-    if #self._hotkeys == 0 then
+    if not self._bindings then
         self:bindHotkeys()
     end
-    for _, hk in ipairs(self._hotkeys) do
-        hk:enable()
+
+    if self._eventtap then
+        self._eventtap:stop()
     end
+
+    self._eventtap = hs.eventtap.new({hs.eventtap.event.types.keyDown}, function(event)
+        -- Only process if we're in a text input field
+        if not isTextInputFocused() then
+            return false -- Let the event pass through
+        end
+
+        local keyCode = event:getKeyCode()
+        local keyChar = hs.keycodes.map[keyCode]
+        if not keyChar then return false end
+        keyChar = keyChar:lower()
+
+        local flags = event:getFlags()
+
+        -- Check each binding
+        for _, binding in ipairs(self._bindings) do
+            if keyChar == binding.key and modifiersMatch(flags, binding.modifiers) then
+                binding.action()
+                return true -- Consume the event
+            end
+        end
+
+        return false -- Let unmatched events pass through
+    end)
+
+    self._eventtap:start()
     return self
 end
 
@@ -131,8 +228,9 @@ end
 --- Returns:
 ---  * The Readline object
 function obj:stop()
-    for _, hk in ipairs(self._hotkeys) do
-        hk:disable()
+    if self._eventtap then
+        self._eventtap:stop()
+        self._eventtap = nil
     end
     return self
 end
@@ -149,4 +247,3 @@ function obj:loadTest()
 end
 
 return obj
-
