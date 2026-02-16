@@ -1,81 +1,87 @@
 # Spoons
 
-Personal [Hammerspoon](https://www.hammerspoon.org/) Spoons repository.
+Personal [Hammerspoon](https://www.hammerspoon.org/) Spoons.
 
 ## Installation
 
-Add this repository to SpoonInstall in your `~/.hammerspoon/init.lua`:
-
 ```lua
 hs.loadSpoon("SpoonInstall")
-
 spoon.SpoonInstall.repos.dbmrq = {
     url = "https://github.com/dbmrq/Spoons",
     desc = "dbmrq's Spoons",
 }
 
--- Install and use Spoons from this repo
-spoon.SpoonInstall:andUse("Readline", { repo = "dbmrq", start = true })
+spoon.SpoonInstall:andUse("WinMan", { repo = "dbmrq", start = true })
 ```
 
-## Available Spoons
+## Spoons
+
+### WinMan
+
+Grid-based window management with modal bindings inspired by Zellij.
+
+**Zellij mode** (modal, like Zellij/tmux):
+| Key | Mode | Actions |
+|-----|------|---------|
+| `Super+p` | Focus | `hjkl` focus, `f` maximize, `x` close |
+| `Super+n` | Resize | `hjkl` resize edges |
+| `Super+h` | Move | `hjkl` move, `123` screen, `c/a` cascade |
+| `Super+t` | Spaces | `hl` switch, `n` new |
+
+**Simple mode** (direct bindings): `HJKL` resize, arrows move, `;` maximize.
+
+```lua
+spoon.WinMan.mode = "zellij"  -- or "simple"
+spoon.WinMan.modifiers = {"ctrl", "alt", "cmd"}
+spoon.WinMan.gridSize = "6x6"
+spoon.WinMan:start()
+```
+
+### CheatSheet
+
+Shows hotkey hints when modifier keys are held. Auto-discovers hotkeys and supports modal mode hints from WinMan.
+
+```lua
+spoon.CheatSheet.modifiers = {"ctrl", "alt", "cmd"}
+spoon.CheatSheet.delay = 0.5
+spoon.CheatSheet:start()
+```
+
+### Collage
+
+Clipboard manager in the menu bar. Tracks copy/cut history with custom submenus.
+
+```lua
+spoon.SpoonInstall:andUse("Collage", {
+    repo = "dbmrq", start = true,
+    fn = function(s)
+        s:addSubmenu("Utils", {{ title = "Reload", fn = hs.reload }})
+    end
+})
+```
 
 ### Readline
 
-Emacs/readline-style keybindings for text editing across macOS apps.
+Emacs-style text editing keybindings system-wide.
 
-| Binding | Action | Description |
-|---------|--------|-------------|
-| `Alt-f` | wordForward | Move cursor forward one word |
-| `Alt-b` | wordBackward | Move cursor backward one word |
-| `Alt-Shift-f` | wordSelectForward | Select forward one word |
-| `Alt-Shift-b` | wordSelectBackward | Select backward one word |
-| `Alt-,` | docStart | Move to start of document |
-| `Alt-.` | docEnd | Move to end of document |
-| `Alt-d` | deleteWordForward | Delete word forward |
-| `Ctrl-w` | deleteWordBackward | Delete word backward |
-| `Ctrl-u` | killToStart | Kill from cursor to start of line |
+| Key | Action |
+|-----|--------|
+| `Alt-f/b` | Word forward/back |
+| `Alt-d` | Delete word forward |
+| `Ctrl-w` | Delete word back |
+| `Ctrl-u` | Kill to line start |
 
-#### Customization
+### SlowQ
 
-Override bindings or disable specific ones:
+Hold `Cmd+Q` for a countdown before quitting — prevents accidental closes.
 
 ```lua
-spoon.SpoonInstall:andUse("Readline", {
-    repo = "dbmrq",
-    start = true,
-    hotkeys = {
-        -- Custom binding
-        wordForward = {{"ctrl"}, "f"},
-        -- Disable a binding
-        killToStart = false,
-    }
-})
+spoon.SlowQ.delay = 4  -- seconds
 ```
 
 ## Development
 
-### Building
-
 ```bash
-./build.sh           # Build all Spoons
-./build.sh Readline  # Build specific Spoon
+./build.sh           # Build all
+./build.sh WinMan    # Build one
 ```
-
-This creates `Spoons/*.spoon.zip` and generates `docs/docs.json`.
-
-### Structure
-
-```
-Spoons/
-├── Source/
-│   └── Readline.spoon/
-│       └── init.lua
-├── Spoons/
-│   └── Readline.spoon.zip   (generated)
-├── docs/
-│   └── docs.json            (generated)
-├── build.sh
-└── README.md
-```
-
