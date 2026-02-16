@@ -88,6 +88,21 @@ obj.copyOnSelectExcludedApps = {
     ["net.kovidgoyal.kitty"] = true,
 }
 
+--- Collage.flashOnCopy
+--- Variable
+--- Flash the menu icon when an item is added. Default: true
+obj.flashOnCopy = true
+
+--- Collage.flashIcon
+--- Variable
+--- Icon to show during flash. Default: "📋"
+obj.flashIcon = "📋"
+
+--- Collage.flashDuration
+--- Variable
+--- Duration of flash in seconds. Default: 0.3
+obj.flashDuration = 0.3
+
 -- Internal state
 obj._menu = nil
 obj._copyHotkey = nil
@@ -98,6 +113,7 @@ obj._customItems = {}
 obj._customSubmenus = {}
 obj._selectionWatcher = nil
 obj._lastSelection = nil
+obj._flashTimer = nil
 
 local pasteboard = require("hs.pasteboard")
 local settings = require("hs.settings")
@@ -141,6 +157,28 @@ function obj:_addToHistory(item, isCut)
 
     self:_saveHistory()
     self:_refreshMenu()
+    self:_flashMenu()
+end
+
+function obj:_flashMenu()
+    if not self.flashOnCopy or not self._menu then return end
+
+    -- Cancel any pending flash restoration
+    if self._flashTimer then
+        self._flashTimer:stop()
+        self._flashTimer = nil
+    end
+
+    -- Show flash icon
+    self._menu:setTitle(self.flashIcon)
+
+    -- Restore original icon after delay
+    self._flashTimer = hs.timer.doAfter(self.flashDuration, function()
+        if self._menu then
+            self._menu:setTitle(self.menuTitle)
+        end
+        self._flashTimer = nil
+    end)
 end
 
 function obj:_getMergedHistory()
@@ -282,9 +320,24 @@ function obj:_getSelectedText()
     local focusedElement = systemElement:attributeValue("AXFocusedUIElement")
     if not focusedElement then return nil end
 
+    -- Try AXSelectedText on focused element first
     local selectedText = focusedElement:attributeValue("AXSelectedText")
     if selectedText and selectedText ~= "" then
         return selectedText
+    end
+
+    -- For web browsers, selection might be in a child element or require
+    -- traversing the hierarchy. Try getting selected text from the app.
+    local app = hs.application.frontmostApplication()
+    if app then
+        local appElement = hs.axuielement.applicationElement(app)
+        if appElement then
+            -- Try AXSelectedText on the app element
+            selectedText = appElement:attributeValue("AXSelectedText")
+            if selectedText and selectedText ~= "" then
+                return selectedText
+            end
+        end
     end
 
     return nil

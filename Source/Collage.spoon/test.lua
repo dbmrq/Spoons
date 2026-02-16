@@ -22,6 +22,7 @@ function M.runUnit()
             recentItemCount = 5,
             menuWidth = 40,
             menuTitle = "✂",
+            flashOnCopy = false,  -- Disable flash in tests
             _copyHistory = {},
             _cutHistory = {},
             _customItems = {},
@@ -32,6 +33,7 @@ function M.runUnit()
                 mockSettings.cut = self._cutHistory
             end,
             _refreshMenu = function(self) end,
+            _flashMenu = function(self) end,
             _loadHistory = function(self)
                 self._copyHistory = mockSettings.copy or {}
                 self._cutHistory = mockSettings.cut or {}
