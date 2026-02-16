@@ -134,6 +134,10 @@ obj.defaultBindings = {
     swapWindows = false,
     toggleStageManager = false,
     focusMode = false,
+
+    -- Undo/redo
+    undo = "Z",
+    redo = "Y",
 }
 
 --- WinMan.actionDescriptions
@@ -171,12 +175,12 @@ obj.actionDescriptions = {
     swapWindows = "Swap Windows",
     toggleStageManager = "Stage Manager",
     focusMode = "Focus Mode",
+    undo = "Undo",
+    redo = "Redo",
 }
 
 -- Internal state
 obj._hotkeys = {}
-obj._gridWidth = 6
-obj._gridHeight = 6
 obj._screenWatcher = nil
 obj._windowFilter = nil  -- For tracking window focus
 obj._lastFocusedWindow = nil  -- For swap windows feature
@@ -186,6 +190,11 @@ obj._stageManagerEnabled = false  -- Track Stage Manager state
 -- Modal state (for zellij mode)
 obj._modals = {}  -- Stores hs.hotkey.modal objects
 obj._currentModal = nil  -- Currently active modal name
+
+-- Undo/redo state: tracks window frame history per window ID
+-- Structure: { [windowId] = { frames = {frame1, frame2, ...}, index = currentIndex } }
+obj._frameHistory = {}
+obj._maxHistorySize = 50  -- Maximum number of frames to remember per window
 
 ---------------------------------------------------------------------------
 -- Private Helper Functions
@@ -398,6 +407,25 @@ local function getScreenIndex(scr, screens)
     return 1
 end
 
+-- Move window to screen using relative positioning (percentage-based)
+local function moveWindowRelative(win, currentScreen, targetScreen)
+    local currentFrame = currentScreen:frame()
+    local targetFrame = targetScreen:frame()
+    local winFrame = win:frame()
+
+    local relX = (winFrame.x - currentFrame.x) / currentFrame.w
+    local relY = (winFrame.y - currentFrame.y) / currentFrame.h
+    local relW = winFrame.w / currentFrame.w
+    local relH = winFrame.h / currentFrame.h
+
+    win:setFrame({
+        x = targetFrame.x + (relX * targetFrame.w),
+        y = targetFrame.y + (relY * targetFrame.h),
+        w = relW * targetFrame.w,
+        h = relH * targetFrame.h,
+    })
+end
+
 local function moveWindowToScreen(win, targetScreen, preserveGridCell)
     if not win or not targetScreen then return end
 
@@ -405,46 +433,17 @@ local function moveWindowToScreen(win, targetScreen, preserveGridCell)
     if not currentScreen then return end
     if currentScreen:id() == targetScreen:id() then return end
 
-    local currentFrame = currentScreen:frame()
-    local targetFrame = targetScreen:frame()
-    local winFrame = win:frame()
-
     if preserveGridCell then
         -- Preserve grid cell position (e.g., left-half stays left-half)
         local cell = grid.get(win, currentScreen)
         if cell then
-            -- Apply grid settings for target screen
             applyGridForScreen(targetScreen)
             grid.set(win, cell, targetScreen)
         else
-            -- Fallback to relative positioning
-            local relX = (winFrame.x - currentFrame.x) / currentFrame.w
-            local relY = (winFrame.y - currentFrame.y) / currentFrame.h
-            local relW = winFrame.w / currentFrame.w
-            local relH = winFrame.h / currentFrame.h
-
-            local newFrame = {
-                x = targetFrame.x + (relX * targetFrame.w),
-                y = targetFrame.y + (relY * targetFrame.h),
-                w = relW * targetFrame.w,
-                h = relH * targetFrame.h,
-            }
-            win:setFrame(newFrame)
+            moveWindowRelative(win, currentScreen, targetScreen)
         end
     else
-        -- Use relative positioning (percentage-based)
-        local relX = (winFrame.x - currentFrame.x) / currentFrame.w
-        local relY = (winFrame.y - currentFrame.y) / currentFrame.h
-        local relW = winFrame.w / currentFrame.w
-        local relH = winFrame.h / currentFrame.h
-
-        local newFrame = {
-            x = targetFrame.x + (relX * targetFrame.w),
-            y = targetFrame.y + (relY * targetFrame.h),
-            w = relW * targetFrame.w,
-            h = relH * targetFrame.h,
-        }
-        win:setFrame(newFrame)
+        moveWindowRelative(win, currentScreen, targetScreen)
     end
 
     -- Optionally focus the target screen
@@ -464,247 +463,250 @@ end
 --- Table of action functions that can be called directly or bound to hotkeys.
 obj.actions = {}
 
--- Resize actions use a shared grow state per direction
-local growVertical = true
-local growHorizontal = true
+---------------------------------------------------------------------------
+-- Undo/Redo Helpers
+---------------------------------------------------------------------------
 
-function obj.actions.resizeUp()
+-- Record current frame for a window (call before making changes)
+local function recordFrameForUndo(win)
+    if not win then return end
+    local id = win:id()
+    if not id then return end
+
+    local frame = win:frame()
+    if not frame then return end
+
+    -- Initialize history for this window if needed
+    if not obj._frameHistory[id] then
+        obj._frameHistory[id] = { frames = {}, index = 0 }
+    end
+
+    local history = obj._frameHistory[id]
+
+    -- If we're not at the end of history (user did undo then new action),
+    -- truncate forward history
+    if history.index < #history.frames then
+        for i = #history.frames, history.index + 1, -1 do
+            table.remove(history.frames, i)
+        end
+    end
+
+    -- Check if the current frame is different from the last recorded frame
+    local lastFrame = history.frames[#history.frames]
+    if lastFrame and
+       lastFrame.x == frame.x and lastFrame.y == frame.y and
+       lastFrame.w == frame.w and lastFrame.h == frame.h then
+        return  -- No change, don't record
+    end
+
+    -- Add current frame to history
+    table.insert(history.frames, { x = frame.x, y = frame.y, w = frame.w, h = frame.h })
+    history.index = #history.frames
+
+    -- Trim history if too large
+    while #history.frames > obj._maxHistorySize do
+        table.remove(history.frames, 1)
+        history.index = history.index - 1
+    end
+end
+
+-- Undo action
+function obj.actions.undo()
+    local win = window.focusedWindow()
+    if not win then return end
+    local id = win:id()
+    if not id then return end
+
+    local history = obj._frameHistory[id]
+    if not history or history.index <= 1 then
+        hs.alert.show("Nothing to undo", 0.5)
+        return
+    end
+
+    -- Record current position if at the end (so we can redo back to it)
+    if history.index == #history.frames then
+        local frame = win:frame()
+        local lastFrame = history.frames[#history.frames]
+        if not lastFrame or
+           lastFrame.x ~= frame.x or lastFrame.y ~= frame.y or
+           lastFrame.w ~= frame.w or lastFrame.h ~= frame.h then
+            table.insert(history.frames, { x = frame.x, y = frame.y, w = frame.w, h = frame.h })
+            history.index = #history.frames
+        end
+    end
+
+    -- Move back in history
+    history.index = history.index - 1
+    local targetFrame = history.frames[history.index]
+    if targetFrame then
+        win:setFrame(targetFrame)
+    end
+end
+
+-- Redo action
+function obj.actions.redo()
+    local win = window.focusedWindow()
+    if not win then return end
+    local id = win:id()
+    if not id then return end
+
+    local history = obj._frameHistory[id]
+    if not history or history.index >= #history.frames then
+        hs.alert.show("Nothing to redo", 0.5)
+        return
+    end
+
+    -- Move forward in history
+    history.index = history.index + 1
+    local targetFrame = history.frames[history.index]
+    if targetFrame then
+        win:setFrame(targetFrame)
+    end
+end
+
+---------------------------------------------------------------------------
+
+-- Resize state tracking
+local resizeState = { vertical = true, horizontal = true }
+
+-- Unified resize helper that handles all four directions
+-- @param direction: "up", "down", "left", "right"
+local function resizeInDirection(direction)
     local win = window.focusedWindow()
     if not win then return end
     local scr = win:screen()
     if not scr then return end
 
-    -- Apply grid for this screen
+    recordFrameForUndo(win)  -- Record for undo before changes
     local gridW, gridH = applyGridForScreen(scr)
     local cell = grid.get(win)
     if not cell then return end
 
-    -- If not at top, snap to top
-    if cell.y > 0 then
-        snapToTop(win, cell, scr)
+    -- Direction-specific configuration
+    local config = {
+        up = {
+            isVertical = true,
+            atEdge = function() return cell.y == 0 end,
+            snapFn = snapToTop,
+            growFn = grid.resizeWindowTaller,
+            shrinkFn = grid.resizeWindowShorter,
+            sizeKey = "h",
+            maxSize = gridH,
+        },
+        down = {
+            isVertical = true,
+            atEdge = function() return cell.y + cell.h >= gridH end,
+            snapFn = snapToBottom,
+            growFn = grid.resizeWindowTaller,
+            shrinkFn = grid.resizeWindowShorter,
+            sizeKey = "h",
+            maxSize = gridH,
+        },
+        left = {
+            isVertical = false,
+            atEdge = function() return cell.x == 0 end,
+            snapFn = snapToLeft,
+            growFn = grid.resizeWindowWider,
+            shrinkFn = grid.resizeWindowThinner,
+            sizeKey = "w",
+            maxSize = gridW,
+        },
+        right = {
+            isVertical = false,
+            atEdge = function() return cell.x + cell.w >= gridW end,
+            snapFn = snapToRight,
+            growFn = grid.resizeWindowWider,
+            shrinkFn = grid.resizeWindowThinner,
+            sizeKey = "w",
+            maxSize = gridW,
+        },
+    }
+
+    local cfg = config[direction]
+    local stateKey = cfg.isVertical and "vertical" or "horizontal"
+    local currentSize = cell[cfg.sizeKey]
+
+    -- If not at edge, snap to edge first
+    if not cfg.atEdge() then
+        cfg.snapFn(win, cell, scr)
         cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
         return
     end
 
-    -- Toggle grow/shrink based on size
-    if cell.h <= 2 then
-        growVertical = true
-    elseif cell.h >= gridH then
-        growVertical = false
+    -- Toggle grow/shrink based on current size
+    if currentSize <= 2 then
+        resizeState[stateKey] = true
+    elseif currentSize >= cfg.maxSize then
+        resizeState[stateKey] = false
     end
 
-    -- Resize
-    if growVertical and cell.h >= 4 then
-        grid.resizeWindowTaller()
-        grid.resizeWindowTaller()
-    elseif growVertical then
-        grid.resizeWindowTaller()
-    elseif cell.h >= 6 then
-        grid.resizeWindowShorter()
-        grid.resizeWindowShorter()
-    else
-        grid.resizeWindowShorter()
+    -- Resize (double step for larger sizes)
+    local growing = resizeState[stateKey]
+    local resizeFn = growing and cfg.growFn or cfg.shrinkFn
+    local threshold = growing and 4 or 6
+
+    resizeFn()
+    if currentSize >= threshold then
+        resizeFn()
     end
 
+    -- Re-snap after resize
     cell = grid.get(win)
-    snapToTop(win, cell, scr)
+    cfg.snapFn(win, cell, scr)
     cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
 end
 
-function obj.actions.resizeDown()
+function obj.actions.resizeUp() resizeInDirection("up") end
+function obj.actions.resizeDown() resizeInDirection("down") end
+function obj.actions.resizeLeft() resizeInDirection("left") end
+function obj.actions.resizeRight() resizeInDirection("right") end
+
+-- Unified move helper that handles all four directions
+-- @param direction: "up", "down", "left", "right"
+-- @param multiStep: if true, move multiple grid steps based on window size
+local function moveInDirection(direction, multiStep)
     local win = window.focusedWindow()
     if not win then return end
     local scr = win:screen()
     if not scr then return end
 
-    -- Apply grid for this screen
+    recordFrameForUndo(win)  -- Record for undo before changes
     local gridW, gridH = applyGridForScreen(scr)
     local cell = grid.get(win)
     if not cell then return end
 
-    -- If not at bottom, snap to bottom
-    if cell.y < gridH - cell.h then
-        snapToBottom(win, cell, scr)
-        cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-        return
+    -- Direction-specific configuration
+    local config = {
+        up    = { pushFn = grid.pushWindowUp,    atEdge = cell.y == 0,               sizeKey = "h" },
+        down  = { pushFn = grid.pushWindowDown,  atEdge = cell.y + cell.h >= gridH,  sizeKey = "h" },
+        left  = { pushFn = grid.pushWindowLeft,  atEdge = cell.x == 0,               sizeKey = "w" },
+        right = { pushFn = grid.pushWindowRight, atEdge = cell.x + cell.w >= gridW,  sizeKey = "w" },
+    }
+
+    local cfg = config[direction]
+    if cfg.atEdge then return end
+
+    local steps = 1
+    if multiStep then
+        steps = (cell[cfg.sizeKey] == 3) and 3 or 2
     end
 
-    -- Toggle grow/shrink based on size
-    if cell.h <= 2 then
-        growVertical = true
-    elseif cell.h >= gridH then
-        growVertical = false
-    end
-
-    -- Resize
-    if growVertical and cell.h >= 4 then
-        grid.resizeWindowTaller()
-        grid.resizeWindowTaller()
-    elseif growVertical then
-        grid.resizeWindowTaller()
-    elseif cell.h >= 6 then
-        grid.resizeWindowShorter()
-        grid.resizeWindowShorter()
-    else
-        grid.resizeWindowShorter()
-    end
-
-    cell = grid.get(win)
-    snapToBottom(win, cell, scr)
+    for _ = 1, steps do cfg.pushFn() end
     cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
 end
 
-function obj.actions.resizeLeft()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    -- Apply grid for this screen
-    local gridW, gridH = applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell then return end
-
-    -- If not at left, snap to left
-    if cell.x > 0 then
-        snapToLeft(win, cell, scr)
-        cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-        return
-    end
-
-    -- Toggle grow/shrink based on size
-    if cell.w <= 2 then
-        growHorizontal = true
-    elseif cell.w >= gridW then
-        growHorizontal = false
-    end
-
-    -- Resize
-    if growHorizontal and cell.w >= 4 then
-        grid.resizeWindowWider()
-        grid.resizeWindowWider()
-    elseif growHorizontal then
-        grid.resizeWindowWider()
-    elseif cell.w >= 6 then
-        grid.resizeWindowThinner()
-        grid.resizeWindowThinner()
-    else
-        grid.resizeWindowThinner()
-    end
-
-    cell = grid.get(win)
-    snapToLeft(win, cell, scr)
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.resizeRight()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    -- Apply grid for this screen
-    local gridW, gridH = applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell then return end
-
-    -- If not at right, snap to right
-    if cell.x < gridW - cell.w then
-        snapToRight(win, cell, scr)
-        cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-        return
-    end
-
-    -- Toggle grow/shrink based on size
-    if cell.w <= 2 then
-        growHorizontal = true
-    elseif cell.w >= gridW then
-        growHorizontal = false
-    end
-
-    -- Resize
-    if growHorizontal and cell.w >= 4 then
-        grid.resizeWindowWider()
-        grid.resizeWindowWider()
-    elseif growHorizontal then
-        grid.resizeWindowWider()
-    elseif cell.w >= 6 then
-        grid.resizeWindowThinner()
-        grid.resizeWindowThinner()
-    else
-        grid.resizeWindowThinner()
-    end
-
-    cell = grid.get(win)
-    snapToRight(win, cell, scr)
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
--- Move actions (push window in grid increments)
-function obj.actions.moveUp()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell or cell.y == 0 then return end
-
-    local steps = (cell.h == 3) and 3 or 2
-    for _ = 1, steps do grid.pushWindowUp() end
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.moveDown()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    local gridW, gridH = applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell or cell.y + cell.h >= gridH then return end
-
-    local steps = (cell.h == 3) and 3 or 2
-    for _ = 1, steps do grid.pushWindowDown() end
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.moveLeft()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell or cell.x == 0 then return end
-
-    local steps = (cell.w == 3) and 3 or 2
-    for _ = 1, steps do grid.pushWindowLeft() end
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.moveRight()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    local gridW, gridH = applyGridForScreen(scr)
-    local cell = grid.get(win)
-    if not cell or cell.x + cell.w >= gridW then return end
-
-    local steps = (cell.w == 3) and 3 or 2
-    for _ = 1, steps do grid.pushWindowRight() end
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
+-- Move actions (push window in grid increments with multi-step)
+function obj.actions.moveUp() moveInDirection("up", true) end
+function obj.actions.moveDown() moveInDirection("down", true) end
+function obj.actions.moveLeft() moveInDirection("left", true) end
+function obj.actions.moveRight() moveInDirection("right", true) end
 
 -- Layout actions
 function obj.actions.maximize()
     local win = window.focusedWindow()
-    if win then grid.maximizeWindow(win) end
+    if not win then return end
+    recordFrameForUndo(win)
+    grid.maximizeWindow(win)
 end
 
 function obj.actions.showDesktop()
@@ -740,10 +742,9 @@ function obj.actions.showDesktop()
     end
 end
 
-function obj.actions.cascadeAll()
-    if obj.cascadeSpacing == 0 then return end
-    local windows = window.orderedWindows()
-    if not windows or #windows == 0 then return end
+-- Helper to cascade a list of windows
+local function cascadeWindowList(windows)
+    if obj.cascadeSpacing == 0 or not windows or #windows == 0 then return end
 
     local firstWin = windows[1]
     if not firstWin then return end
@@ -761,61 +762,34 @@ function obj.actions.cascadeAll()
 
     for i, win in ipairs(windows) do
         local offset = (i - 1) * spacing
-        local rect = {
+        win:setFrame({
             x = xMargin + offset,
             y = scr.y + yMargin + offset,
             w = scr.w - (2 * xMargin) - (nOfSpaces * spacing),
             h = scr.h - (2 * yMargin) - (nOfSpaces * spacing),
-        }
-        win:setFrame(rect)
+        })
     end
 end
 
+function obj.actions.cascadeAll()
+    cascadeWindowList(window.orderedWindows())
+end
+
 function obj.actions.cascadeApp()
-    if obj.cascadeSpacing == 0 then return end
     local focusedWin = window.focusedWindow()
     if not focusedWin then return end
 
     local focusedApp = focusedWin:application()
     if not focusedApp then return end
 
-    local windows = window.orderedWindows()
-    if not windows then return end
-
     local appWindows = {}
-    for _, win in ipairs(windows) do
+    for _, win in ipairs(window.orderedWindows() or {}) do
         local app = win:application()
         if app and app == focusedApp then
             table.insert(appWindows, win)
         end
     end
-
-    if #appWindows == 0 then return end
-
-    local firstWin = appWindows[1]
-    if not firstWin then return end
-    local firstScreen = firstWin:screen()
-    if not firstScreen then return end
-    local scr = firstScreen:frame()
-    if not scr then return end
-
-    local nOfSpaces = #appWindows - 1
-    local xMargin = scr.w / 10
-    local yMargin = 20
-
-    local spacing = obj.cascadeSpacing * 10 / math.max(nOfSpaces, 1)
-    if nOfSpaces > 10 then spacing = obj.cascadeSpacing end
-
-    for i, win in ipairs(appWindows) do
-        local offset = (i - 1) * spacing
-        local rect = {
-            x = xMargin + offset,
-            y = scr.y + yMargin + offset,
-            w = scr.w - (2 * xMargin) - (nOfSpaces * spacing),
-            h = scr.h - (2 * yMargin) - (nOfSpaces * spacing),
-        }
-        win:setFrame(rect)
-    end
+    cascadeWindowList(appWindows)
 end
 
 function obj.actions.snapAll()
@@ -834,6 +808,7 @@ function obj.actions.moveToNextScreen()
     local screens = getSortedScreens()
     if #screens < 2 then return end
 
+    recordFrameForUndo(win)
     local currentIndex = getScreenIndex(win:screen(), screens)
     local nextIndex = (currentIndex % #screens) + 1
     moveWindowToScreen(win, screens[nextIndex], obj.preserveGridCell)
@@ -846,34 +821,29 @@ function obj.actions.moveToPrevScreen()
     local screens = getSortedScreens()
     if #screens < 2 then return end
 
+    recordFrameForUndo(win)
     local currentIndex = getScreenIndex(win:screen(), screens)
     local prevIndex = ((currentIndex - 2) % #screens) + 1
     moveWindowToScreen(win, screens[prevIndex], obj.preserveGridCell)
 end
 
-function obj.actions.moveToScreen1()
+-- Helper to move window to a specific screen number
+local function moveToScreenNumber(screenNum)
     local win = window.focusedWindow()
     if not win then return end
     local screens = getSortedScreens()
-    if #screens >= 1 then moveWindowToScreen(win, screens[1], obj.preserveGridCell) end
+    if #screens >= screenNum then
+        recordFrameForUndo(win)
+        moveWindowToScreen(win, screens[screenNum], obj.preserveGridCell)
+    end
 end
 
-function obj.actions.moveToScreen2()
-    local win = window.focusedWindow()
-    if not win then return end
-    local screens = getSortedScreens()
-    if #screens >= 2 then moveWindowToScreen(win, screens[2], obj.preserveGridCell) end
-end
-
-function obj.actions.moveToScreen3()
-    local win = window.focusedWindow()
-    if not win then return end
-    local screens = getSortedScreens()
-    if #screens >= 3 then moveWindowToScreen(win, screens[3], obj.preserveGridCell) end
-end
+function obj.actions.moveToScreen1() moveToScreenNumber(1) end
+function obj.actions.moveToScreen2() moveToScreenNumber(2) end
+function obj.actions.moveToScreen3() moveToScreenNumber(3) end
 
 ---------------------------------------------------------------------------
--- Phase 4: New Features
+-- Positioning Actions
 ---------------------------------------------------------------------------
 
 -- Center window at various sizes
@@ -883,6 +853,7 @@ local function centerWindowAtSize(sizeFraction)
     local scr = win:screen()
     if not scr then return end
 
+    recordFrameForUndo(win)  -- Record for undo before changes
     local screenFrame = scr:frame()
     local newW = screenFrame.w * sizeFraction
     local newH = screenFrame.h * sizeFraction
@@ -904,56 +875,23 @@ function obj.actions.centerLarge()
     centerWindowAtSize(0.80)  -- 80% of screen
 end
 
--- Quick thirds positioning
-function obj.actions.leftThird()
+-- Quick positioning helper - sets window to a specific grid cell
+local function setWindowGridPosition(x, y, w, h)
     local win = window.focusedWindow()
     if not win then return end
     local scr = win:screen()
     if not scr then return end
-
+    recordFrameForUndo(win)  -- Record for undo before changes
     applyGridForScreen(scr)
-    grid.set(win, geometry(0, 0, 2, 6), scr)  -- 2/6 = 1/3 width
+    grid.set(win, geometry(x, y, w, h), scr)
 end
 
-function obj.actions.centerThird()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    grid.set(win, geometry(2, 0, 2, 6), scr)  -- middle 1/3
-end
-
-function obj.actions.rightThird()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    grid.set(win, geometry(4, 0, 2, 6), scr)  -- right 1/3
-end
-
-function obj.actions.leftTwoThirds()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    grid.set(win, geometry(0, 0, 4, 6), scr)  -- 4/6 = 2/3 width
-end
-
-function obj.actions.rightTwoThirds()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-
-    applyGridForScreen(scr)
-    grid.set(win, geometry(2, 0, 4, 6), scr)  -- right 2/3
-end
+-- Quick thirds positioning (grid is 6x6, so 2 cells = 1/3, 4 cells = 2/3)
+function obj.actions.leftThird() setWindowGridPosition(0, 0, 2, 6) end
+function obj.actions.centerThird() setWindowGridPosition(2, 0, 2, 6) end
+function obj.actions.rightThird() setWindowGridPosition(4, 0, 2, 6) end
+function obj.actions.leftTwoThirds() setWindowGridPosition(0, 0, 4, 6) end
+function obj.actions.rightTwoThirds() setWindowGridPosition(2, 0, 4, 6) end
 
 -- Gather windows to current screen
 function obj.actions.gatherWindows()
@@ -1106,90 +1044,33 @@ end
 -- Zellij Mode: Pure Resize Actions (no snapping/moving)
 ---------------------------------------------------------------------------
 
--- Pure resize: just grow or shrink without changing position
-function obj.actions.pureResizeShrinkWidth()
+-- Generic grid action helper (applies grid settings, calls action, cascades)
+local function withGridAction(actionFn)
     local win = window.focusedWindow()
     if not win then return end
     local scr = win:screen()
     if not scr then return end
+    recordFrameForUndo(win)  -- Record for undo before changes
     applyGridForScreen(scr)
-    grid.resizeWindowThinner()
+    actionFn()
     cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
 end
 
-function obj.actions.pureResizeGrowWidth()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.resizeWindowWider()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.pureResizeShrinkHeight()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.resizeWindowShorter()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.pureResizeGrowHeight()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.resizeWindowTaller()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
+-- Pure resize actions
+function obj.actions.pureResizeShrinkWidth() withGridAction(grid.resizeWindowThinner) end
+function obj.actions.pureResizeGrowWidth() withGridAction(grid.resizeWindowWider) end
+function obj.actions.pureResizeShrinkHeight() withGridAction(grid.resizeWindowShorter) end
+function obj.actions.pureResizeGrowHeight() withGridAction(grid.resizeWindowTaller) end
 
 ---------------------------------------------------------------------------
 -- Zellij Mode: Pure Move Actions (no resizing)
 ---------------------------------------------------------------------------
 
-function obj.actions.pureMoveLeft()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.pushWindowLeft()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.pureMoveRight()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.pushWindowRight()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.pureMoveUp()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.pushWindowUp()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
-
-function obj.actions.pureMoveDown()
-    local win = window.focusedWindow()
-    if not win then return end
-    local scr = win:screen()
-    if not scr then return end
-    applyGridForScreen(scr)
-    grid.pushWindowDown()
-    cascadeAllOverlapping(obj.cascadeSpacing, obj.slowResizeApps)
-end
+-- Pure move actions (single step, using existing moveInDirection helper)
+function obj.actions.pureMoveLeft() moveInDirection("left", false) end
+function obj.actions.pureMoveRight() moveInDirection("right", false) end
+function obj.actions.pureMoveUp() moveInDirection("up", false) end
+function obj.actions.pureMoveDown() moveInDirection("down", false) end
 
 ---------------------------------------------------------------------------
 -- Zellij Mode: Spaces Actions
@@ -1424,8 +1305,7 @@ end
 --- Returns:
 ---  * The WinMan object
 function obj:start()
-    -- Parse and apply grid settings
-    self._gridWidth, self._gridHeight = parseGridSize(self.gridSize)
+    -- Apply grid settings
     grid.setGrid(self.gridSize)
     grid.setMargins(self.gridMargins)
 
