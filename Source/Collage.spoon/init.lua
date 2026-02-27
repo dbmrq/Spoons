@@ -75,6 +75,11 @@ obj.copyOnSelect = false
 --- Example: { ["com.apple.Safari"] = true, ["com.apple.Notes"] = true }
 obj.copyOnSelectApps = {}
 
+--- Collage.copyOnSelectRequiresShift
+--- Variable
+--- When true, copy-on-selection only triggers when Shift is held during selection. Default: false
+obj.copyOnSelectRequiresShift = false
+
 --- Collage.copyOnSelectExcludedApps
 --- Variable
 --- Table of app bundle IDs where copy-on-selection should NOT apply.
@@ -121,9 +126,25 @@ local settings = require("hs.settings")
 local COPY_HISTORY_KEY = "Collage.copyHistory"
 local CUT_HISTORY_KEY = "Collage.cutHistory"
 
+-- Migrate old format (array of strings) to new format (array of {text, timestamp})
+local function migrateHistory(history)
+    if #history == 0 then return history end
+    -- Check if already migrated (first item is a table with 'text' key)
+    if type(history[1]) == "table" and history[1].text then
+        return history
+    end
+    -- Migrate: assign timestamps based on position (older items get older timestamps)
+    local migrated = {}
+    local baseTime = os.time() - #history
+    for i, item in ipairs(history) do
+        table.insert(migrated, { text = item, timestamp = baseTime + i })
+    end
+    return migrated
+end
+
 function obj:_loadHistory()
-    self._copyHistory = settings.get(COPY_HISTORY_KEY) or {}
-    self._cutHistory = settings.get(CUT_HISTORY_KEY) or {}
+    self._copyHistory = migrateHistory(settings.get(COPY_HISTORY_KEY) or {})
+    self._cutHistory = migrateHistory(settings.get(CUT_HISTORY_KEY) or {})
 end
 
 function obj:_saveHistory()
@@ -136,24 +157,25 @@ function obj:_addToHistory(item, isCut)
 
     local history = isCut and self._cutHistory or self._copyHistory
     local maxSize = isCut and self.cutHistorySize or self.copyHistorySize
+    local timestamp = os.time() + os.clock() -- Use clock for sub-second precision
 
     -- Remove duplicate if exists in either history
     for i = #self._copyHistory, 1, -1 do
-        if self._copyHistory[i] == item then
+        if self._copyHistory[i].text == item then
             table.remove(self._copyHistory, i)
         end
     end
     for i = #self._cutHistory, 1, -1 do
-        if self._cutHistory[i] == item then
+        if self._cutHistory[i].text == item then
             table.remove(self._cutHistory, i)
         end
     end
 
-    -- Add to appropriate history
+    -- Add to appropriate history with timestamp
     while #history >= maxSize do
         table.remove(history, 1)
     end
-    table.insert(history, item)
+    table.insert(history, { text = item, timestamp = timestamp })
 
     self:_saveHistory()
     self:_refreshMenu()
@@ -203,15 +225,18 @@ function obj:_getMergedHistory()
     local seen = {}
     local allItems = {}
 
-    for i, item in ipairs(self._copyHistory) do
-        table.insert(allItems, { text = item, index = i, source = "copy" })
+    -- Collect all items with their timestamps
+    for _, item in ipairs(self._copyHistory) do
+        table.insert(allItems, item)
     end
-    for i, item in ipairs(self._cutHistory) do
-        table.insert(allItems, { text = item, index = i + 1000, source = "cut" })
+    for _, item in ipairs(self._cutHistory) do
+        table.insert(allItems, item)
     end
 
-    table.sort(allItems, function(a, b) return a.index > b.index end)
+    -- Sort by timestamp, most recent first
+    table.sort(allItems, function(a, b) return a.timestamp > b.timestamp end)
 
+    -- Build merged list, skipping duplicates
     for _, item in ipairs(allItems) do
         if not seen[item.text] then
             seen[item.text] = true
@@ -346,8 +371,13 @@ function obj:_getSelectedText()
 end
 
 -- Handle selection change - copy if there's a new selection
-function obj:_handleSelectionChange()
+function obj:_handleSelectionChange(shiftHeld)
     if not self:_shouldCopyOnSelect() then return end
+
+    -- Only copy if Shift is held (when copyOnSelectRequiresShift is enabled)
+    if self.copyOnSelectRequiresShift and not shiftHeld then
+        return
+    end
 
     local selection = self:_getSelectedText()
     if selection and selection ~= self._lastSelection then
@@ -484,9 +514,11 @@ function obj:start()
     if self.copyOnSelect then
         self._selectionWatcher = hs.eventtap.new(
             {hs.eventtap.event.types.leftMouseUp},
-            function()
+            function(event)
+                -- Capture shift state now (event may not be valid after timer)
+                local shiftHeld = event:getFlags().shift
                 -- Small delay to let the selection be registered
-                hs.timer.doAfter(0.05, function() self:_handleSelectionChange() end)
+                hs.timer.doAfter(0.05, function() self:_handleSelectionChange(shiftHeld) end)
                 return false -- Don't consume the event
             end
         )
