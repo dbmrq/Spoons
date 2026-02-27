@@ -48,8 +48,9 @@ function M.runUnit()
             if not item or item == "" then return end
             local history = isCut and self._cutHistory or self._copyHistory
             local maxSize = isCut and self.cutHistorySize or self.copyHistorySize
+            local timestamp = os.time() + os.clock()
             while #history >= maxSize do table.remove(history, 1) end
-            table.insert(history, item)
+            table.insert(history, { text = item, timestamp = timestamp })
             self:_saveHistory()
             self:_refreshMenu()
         end
@@ -58,8 +59,8 @@ function M.runUnit()
         obj:_addToHistory("test item 2", false)
 
         return #obj._copyHistory == 2
-            and obj._copyHistory[1] == "test item 1"
-            and obj._copyHistory[2] == "test item 2"
+            and obj._copyHistory[1].text == "test item 1"
+            and obj._copyHistory[2].text == "test item 2"
             and #obj._cutHistory == 0
     end
 
@@ -78,8 +79,9 @@ function M.runUnit()
             if not item or item == "" then return end
             local history = isCut and self._cutHistory or self._copyHistory
             local maxSize = isCut and self.cutHistorySize or self.copyHistorySize
+            local timestamp = os.time() + os.clock()
             while #history >= maxSize do table.remove(history, 1) end
-            table.insert(history, item)
+            table.insert(history, { text = item, timestamp = timestamp })
             self:_saveHistory()
             self:_refreshMenu()
         end
@@ -88,8 +90,8 @@ function M.runUnit()
         obj:_addToHistory("cut item 2", true)
 
         return #obj._cutHistory == 2
-            and obj._cutHistory[1] == "cut item 1"
-            and obj._cutHistory[2] == "cut item 2"
+            and obj._cutHistory[1].text == "cut item 1"
+            and obj._cutHistory[2].text == "cut item 2"
             and #obj._copyHistory == 0
     end
 
@@ -204,24 +206,33 @@ function M.runUnit()
         failed = failed + 1
     end
 
-    -- Test 7: _getMergedHistory merges and sorts correctly
+    -- Test 7: _getMergedHistory merges and sorts correctly by timestamp
     local function test_getMergedHistory()
         local obj = createMockObj()
-        obj._copyHistory = {"copy1", "copy2"}
-        obj._cutHistory = {"cut1", "cut2", "cut3"}
+        -- Use timestamps to control ordering: most recent item has highest timestamp
+        local baseTime = os.time()
+        obj._copyHistory = {
+            { text = "copy1", timestamp = baseTime + 1 },
+            { text = "copy2", timestamp = baseTime + 4 }  -- Most recent copy
+        }
+        obj._cutHistory = {
+            { text = "cut1", timestamp = baseTime + 2 },
+            { text = "cut2", timestamp = baseTime + 3 },
+            { text = "cut3", timestamp = baseTime + 5 }   -- Most recent overall
+        }
         obj._getMergedHistory = collage and collage._getMergedHistory or function(self)
             local merged = {}
             local seen = {}
             local allItems = {}
 
-            for i, item in ipairs(self._copyHistory) do
-                table.insert(allItems, { text = item, index = i, source = "copy" })
+            for _, item in ipairs(self._copyHistory) do
+                table.insert(allItems, item)
             end
-            for i, item in ipairs(self._cutHistory) do
-                table.insert(allItems, { text = item, index = i + 1000, source = "cut" })
+            for _, item in ipairs(self._cutHistory) do
+                table.insert(allItems, item)
             end
 
-            table.sort(allItems, function(a, b) return a.index > b.index end)
+            table.sort(allItems, function(a, b) return a.timestamp > b.timestamp end)
 
             for _, item in ipairs(allItems) do
                 if not seen[item.text] then
@@ -235,11 +246,13 @@ function M.runUnit()
 
         local merged = obj:_getMergedHistory()
 
-        -- Cut items should come first (higher index), most recent first
+        -- Items should be sorted by timestamp, most recent first
         return #merged == 5
-            and merged[1] == "cut3"  -- Most recent cut
-            and merged[2] == "cut2"
-            and merged[3] == "cut1"
+            and merged[1] == "cut3"   -- timestamp +5, most recent
+            and merged[2] == "copy2"  -- timestamp +4
+            and merged[3] == "cut2"   -- timestamp +3
+            and merged[4] == "cut1"   -- timestamp +2
+            and merged[5] == "copy1"  -- timestamp +1, oldest
     end
 
     if test_getMergedHistory() then
@@ -258,8 +271,9 @@ function M.runUnit()
             if not item or item == "" then return end
             local history = isCut and self._cutHistory or self._copyHistory
             local maxSize = isCut and self.cutHistorySize or self.copyHistorySize
+            local timestamp = os.time() + os.clock()
             while #history >= maxSize do table.remove(history, 1) end
-            table.insert(history, item)
+            table.insert(history, { text = item, timestamp = timestamp })
         end
 
         obj:_addToHistory("item1", false)
@@ -268,8 +282,8 @@ function M.runUnit()
         obj:_addToHistory("item4", false)
 
         return #obj._copyHistory == 3
-            and obj._copyHistory[1] == "item2"  -- item1 should be removed
-            and obj._copyHistory[3] == "item4"
+            and obj._copyHistory[1].text == "item2"  -- item1 should be removed
+            and obj._copyHistory[3].text == "item4"
     end
 
     if test_history_limits() then
